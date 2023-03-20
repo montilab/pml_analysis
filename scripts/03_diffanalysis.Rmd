@@ -1,0 +1,527 @@
+---
+title: "PML diffanal"
+author: "M. Muzamil Khan"
+date: "2/28/2022"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "/Users/mmkhan/Documents/Research/pml/pml_wo_infl/pml_github")
+```
+
+```{r warning=FALSE, message=F}
+library(ggplot2)
+library(stringr)
+library(DT)
+library(plyr)
+library(dplyr)
+library(biomaRt)
+library(Biobase)
+library(reshape2)
+library(formattable)
+library(VennDiagram)
+library(hypeR)
+library(xlsx)
+PATH <- getwd()
+```
+
+## Recap
+The summary statistics and respective plots along with eSet creation is in `00_summstats_eset.{Rmd, html}`, imputation with random forest is in `01_pml_imp_summary.{Rmd, html}`,  DimRed analysis is in `02_dimred_hvg.{Rmd, html}`. This file contains differential expression analysis using DESeq2 along with significant marker info. The analysis is performed with age, sex and smoking status as covariates with histopathological group.
+
+```{r}
+eset <- readRDS(file.path(PATH, "data/2021_08_20_eset_imputed.RDS"))
+eSet_wo_infl <- eset[, which(pData(eset)$Class != 'Inflammatory')]
+table(eSet_wo_infl$Class)
+cpm_eset <- eSet_wo_infl
+exprs(cpm_eset) <- apply(exprs(cpm_eset), 2, function(x) {x/(sum(x)/1000000)})
+print(dim(cpm_eset))
+
+eSet_wo_infl$Class <- recode(eSet_wo_infl$Class, "Cancer"="OSCC")
+eSet_wo_infl$Class <- factor(eSet_wo_infl$Class, levels = c("Control", "HkNR", "Dysplasia", "OSCC"))
+```
+
+
+## Differential expression analysis (Regular) - Pairwise {.tabset .tabset-fade .tabset-pills}
+### OSCC vs. Control
+
+Reference level = Control
+
+```{r}
+cancer.vs.control <- eSet_wo_infl[, which(pData(eSet_wo_infl)$Class %in% c('Control', 'OSCC'))]
+colData <- data.frame(condition=cancer.vs.control$Class)
+colData$sex <- cancer.vs.control$Sex
+colData$smoke <- cancer.vs.control$imputed_smoking_label
+
+#make DESeq2 expected format for diffex analysis
+dds <- DESeq2::DESeqDataSetFromMatrix(countData=exprs(cancer.vs.control), 
+                                      colData=colData, 
+                                      design= formula(~sex+smoke+condition))
+
+dds$condition <- relevel(dds$condition, ref = "Control")
+#perform diffex
+dds_results <- DESeq2::DESeq(dds)
+
+results_cancer.vs.control<- DESeq2::results(dds_results)
+summary(results_cancer.vs.control)
+```
+
+```{r}
+results_cancer.vs.control <- results_cancer.vs.control[!is.na(results_cancer.vs.control$padj),]
+results_cancer.vs.control$genes <- rownames(results_cancer.vs.control)
+print(c("fdr<=0.05"=sum(results_cancer.vs.control$padj<=.05),
+  "fdr<=0.01"=sum(results_cancer.vs.control$padj<=.01),
+  "fdr<=0.001"=sum(results_cancer.vs.control$padj<=.001)))
+```
+
+```{r}
+fdr <- 0.05
+max_fc <- 1.5
+min_fc <- 1.5
+cancer.vs.control_up <- rownames(results_cancer.vs.control[which((results_cancer.vs.control$padj <= fdr) & (results_cancer.vs.control$log2FoldChange > max_fc)),])
+cancer.vs.control_down <- rownames(results_cancer.vs.control[which((results_cancer.vs.control$padj <= fdr) & (results_cancer.vs.control$log2FoldChange < -min_fc)),])
+
+c("cancer.vs.control_up"= length(cancer.vs.control_up),
+  "cancer.vs.control_down"= length(cancer.vs.control_down))
+
+cancer.vs.control_marker_list <- list(cancer.vs.control_up, cancer.vs.control_down)
+
+DT::datatable(data.frame(results_cancer.vs.control[results_cancer.vs.control$padj<=.05 & results_cancer.vs.control$log2FoldChange >= 1.5, ]), caption = "Cancer.vs.Control-Upregulated")
+DT::datatable(data.frame(results_cancer.vs.control[results_cancer.vs.control$padj<=.05 & results_cancer.vs.control$log2FoldChange <= -1.5, ]), caption = "Cancer.vs.Control-Downregulated")
+
+```
+
+```{r hcopt}
+#function for hclust with optimal leaf ordering from S. Monti / D. Gusenleitner
+hcopt <- function(d, HC=NULL, method = "ward", members = NULL){
+  require("cba")
+  if ( is.null(HC) ) {
+    HC <- hclust(d,method=method,members=members)
+  }
+  #optimal leaf ordering
+  ORD <- order.optimal(d,merge=HC$merge)
+  HC$merge <- ORD$merge
+  HC$order <- ORD$order
+  HC
+}
+```
+
+Significant diffex genes padj <= 0.05 and logfc +/- 1.5 with hcopt()
+
+```{r}
+topgenes <- unlist(cancer.vs.control_marker_list)
+heatdata <-exprs(cancer.vs.control)[topgenes,]
+heatdata <- t(scale(t(heatdata)))
+heatmapkey <- paste("Scaled", "counts", sep = "\n")
+condition <- c('Class', 'imputed_smoking_label')
+
+hc.row <- hcopt(as.dist(1-cor(t(heatdata))),method="ward.D")
+annot_col <- pData(cancer.vs.control)[,condition, drop=FALSE]
+pheatmap::pheatmap(heatdata, cluster_rows = hc.row, show_rownames = FALSE, color = colorRampPalette(c("blue","white","red"))(100), annotation_col = annot_col)
+
+```
+
+
+```{r}
+umap_results <- umap::umap(t(heatdata), config = umap::umap.defaults )
+dtp <- data.frame(umap_results$layout)
+dtp$Sample <- colnames(heatdata)
+dtp$Class <- pData(cancer.vs.control)$Class
+dtp$Type <-  pData(cancer.vs.control)$Type
+
+plotly::ggplotly(ggplot(data = dtp, aes_string(x=dtp$X1, y=dtp$X2, label= "Sample", col = "Class", shape="Type")) +  
+                   ggplot2::geom_point()+ ggplot2::labs(x = 'UMAP1', y = 'UMAP2'))
+```
+
+
+### Dysplasia vs. Control
+
+Reference level = Control
+
+```{r}
+dys.vs.control <- eSet_wo_infl[, which(pData(eSet_wo_infl)$Class %in% c('Control', 'Dysplasia'))]
+colData <- data.frame(condition=dys.vs.control$Class)
+colData$sex <- dys.vs.control$Sex
+colData$smoke <- dys.vs.control$imputed_smoking_label
+
+#make DESeq2 expected format for diffex analysis
+dds <- DESeq2::DESeqDataSetFromMatrix(countData=exprs(dys.vs.control), 
+                                      colData=colData,
+                                      design = ~sex+smoke+condition)
+dds$condition <- relevel(dds$condition, ref = 'Control')
+
+#perform diffex
+dds_results <- DESeq2::DESeq(dds)
+#get the results in a nice tabular format
+results_dys.vs.control<- DESeq2::results(dds_results)
+results_dys.vs.control <- results_dys.vs.control[order(results_dys.vs.control$padj),]
+#DT::datatable(as.data.frame(results_other.vs.control))
+```
+
+```{r}
+results_dys.vs.control <- results_dys.vs.control[!is.na(results_dys.vs.control$padj),]
+c("fdr<=0.05"=sum(results_dys.vs.control$padj<=.05),
+  "fdr<=0.01"=sum(results_dys.vs.control$padj<=.01),
+  "fdr<=0.001"=sum(results_dys.vs.control$padj<=.001))
+
+```
+
+```{r}
+dys.vs.control_up <- rownames(results_dys.vs.control[which((results_dys.vs.control$padj <= fdr)&(results_dys.vs.control$log2FoldChange> +max_fc)),])
+dys.vs.control_down <- rownames(results_dys.vs.control[which((results_dys.vs.control$padj <= fdr)&(results_dys.vs.control$log2FoldChange < -min_fc)),])
+
+c("dys.vs.control_up"= length(dys.vs.control_up),
+  "dys.vs.control_down"= length(dys.vs.control_down))
+dys.vs.control_marker_list <- list(dys.vs.control_up, dys.vs.control_down)
+
+DT::datatable(data.frame(results_dys.vs.control[results_dys.vs.control$padj<=.05 & results_dys.vs.control$log2FoldChange >= 1.5, ]), caption = "Dys.vs.Control-Upregulated")
+DT::datatable(data.frame(results_dys.vs.control[results_dys.vs.control$padj<=.05 & results_dys.vs.control$log2FoldChange <= -1.5, ]), caption = "Dys.vs.Control-Downregulated")
+```
+
+```{r}
+topgenes <- unlist(dys.vs.control_marker_list)
+heatdata <- log2(exprs(dys.vs.control)[topgenes,]+1)
+heatdata <- t(scale(t(heatdata)))
+heatmapkey <- paste("Scaled", "counts", sep = "\n")
+condition <- 'Class'
+
+hc.row <- hcopt(as.dist(1-cor(t(heatdata))),method="ward.D")
+annot_col <- pData(dys.vs.control)[,condition, drop=FALSE]
+pheatmap::pheatmap(heatdata, cluster_rows = hc.row, show_rownames = FALSE, color = colorRampPalette(c("blue","white","red"))(100), annotation_col = annot_col)
+
+```
+
+### HkNR vs. Control
+
+Reference level = Control
+
+```{r}
+hknr.vs.control <- eSet_wo_infl[, which(pData(eSet_wo_infl)$Class %in% c('Control', 'HkNR'))]
+colData <- data.frame(condition=hknr.vs.control$Class)
+colData$sex <- hknr.vs.control$Sex
+colData$smoke <- hknr.vs.control$imputed_smoking_label
+#make DESeq2 expected format for diffex analysis
+dds <- DESeq2::DESeqDataSetFromMatrix(countData=exprs(hknr.vs.control), 
+                                      colData=colData,
+                                      design = ~sex+smoke+condition)
+dds$condition <- relevel(dds$condition, ref = 'Control')
+
+#perform diffex
+dds_results <- DESeq2::DESeq(dds)
+#get the results in a nice tabular format
+results_hknr.vs.control<- DESeq2::results(dds_results)
+results_hknr.vs.control <- results_hknr.vs.control[order(results_hknr.vs.control$padj),]
+#DT::datatable(as.data.frame(results_other.vs.control))
+```
+
+```{r}
+results_hknr.vs.control <- results_hknr.vs.control[!is.na(results_hknr.vs.control$padj),]
+c("fdr<=0.05"=sum(results_hknr.vs.control$padj<=.05),
+  "fdr<=0.01"=sum(results_hknr.vs.control$padj<=.01),
+  "fdr<=0.001"=sum(results_hknr.vs.control$padj<=.001))
+```
+
+```{r}
+hknr.vs.control_up <- rownames(results_hknr.vs.control[which((results_hknr.vs.control$padj <= fdr)&(results_hknr.vs.control$log2FoldChange> +max_fc)),])
+hknr.vs.control_down <- rownames(results_hknr.vs.control[which((results_hknr.vs.control$padj <= fdr)&(results_hknr.vs.control$log2FoldChange < -min_fc)),])
+
+hknr.vs.control_marker_list <- list(hknr.vs.control_up, hknr.vs.control_down)
+
+DT::datatable(data.frame(results_hknr.vs.control[results_hknr.vs.control$padj<=.05 & results_hknr.vs.control$log2FoldChange >= 1.5, ]), caption = "HkNR.vs.Control-Upregulated")
+DT::datatable(data.frame(results_hknr.vs.control[results_hknr.vs.control$padj<=.05 & results_hknr.vs.control$log2FoldChange <= -1.5, ]), caption = "HkNR.vs.Control-Downregulated")
+
+```
+
+```{r}
+topgenes <- unlist(hknr.vs.control_marker_list)
+heatdata <- log2(exprs(hknr.vs.control)[topgenes,]+1)
+heatdata <- t(scale(t(heatdata)))
+heatmapkey <- paste("Scaled", "counts", sep = "\n")
+condition <- 'Class'
+
+hc.row <- hcopt(as.dist(1-cor(t(heatdata))),method="ward.D")
+annot_col <- pData(hknr.vs.control)[,condition, drop=FALSE]
+pheatmap::pheatmap(heatdata, cluster_rows = hc.row, show_rownames = FALSE, color = colorRampPalette(c("blue","white","red"))(100), annotation_col = annot_col)
+
+```
+
+
+### Dysplasia vs. OSCC
+
+Reference level = Dysplasia
+
+```{r}
+dys.vs.cancer <- eSet_wo_infl[, which(pData(eSet_wo_infl)$Class %in% c('OSCC', 'Dysplasia'))]
+colData <- data.frame(condition=dys.vs.cancer$Class)
+colData$sex <- dys.vs.cancer$Sex
+colData$smoke <- dys.vs.cancer$imputed_smoking_label
+#make DESeq2 expected format for diffex analysis
+dds <- DESeq2::DESeqDataSetFromMatrix(countData=exprs(dys.vs.cancer), 
+                                      colData=colData,
+                                      design = ~sex+smoke+condition)
+dds$condition <- relevel(dds$condition, ref = 'Dysplasia')
+
+#perform diffex
+dds_results <- DESeq2::DESeq(dds)
+#get the results in a nice tabular format
+results_dys.vs.cancer<- DESeq2::results(dds_results)
+results_dys.vs.cancer <- results_dys.vs.cancer[order(results_dys.vs.cancer$padj),]
+#DT::datatable(as.data.frame(results_other.vs.control))
+```
+
+```{r}
+results_dys.vs.cancer <- results_dys.vs.cancer[!is.na(results_dys.vs.cancer$padj),]
+c("fdr<=0.05"=sum(results_dys.vs.cancer$padj<=.05),
+  "fdr<=0.01"=sum(results_dys.vs.cancer$padj<=.01),
+  "fdr<=0.001"=sum(results_dys.vs.cancer$padj<=.001))
+```
+
+```{r}
+dys.vs.cancer_up <- rownames(results_dys.vs.cancer[which((results_dys.vs.cancer$padj <= fdr)&(results_dys.vs.cancer$log2FoldChange> +max_fc)),])
+dys.vs.cancer_down <- rownames(results_dys.vs.cancer[which((results_dys.vs.cancer$padj <= fdr)&(results_dys.vs.cancer$log2FoldChange < -min_fc)),])
+
+dys.vs.cancer_marker_list <- list(dys.vs.cancer_up, dys.vs.cancer_down)
+
+DT::datatable(data.frame(results_dys.vs.cancer[results_dys.vs.cancer$padj<=.05 & results_dys.vs.cancer$log2FoldChange >= 1.5, ]), caption = "Dys.vs.Cancer-Upregulated")
+DT::datatable(data.frame(results_dys.vs.cancer[results_dys.vs.cancer$padj<=.05 & results_dys.vs.cancer$log2FoldChange <= -1.5, ]), caption = "Dys.vs.Cancer-Downregulated")
+```
+
+```{r}
+topgenes <- unlist(dys.vs.control_marker_list)
+heatdata <- log2(exprs(dys.vs.cancer)[topgenes,]+1)
+heatdata <- t(scale(t(heatdata)))
+heatmapkey <- paste("Scaled", "counts", sep = "\n")
+condition <- 'Class'
+
+hc.row <- hcopt(as.dist(1-cor(t(heatdata))),method="ward.D")
+annot_col <- pData(dys.vs.cancer)[,condition, drop=FALSE]
+pheatmap::pheatmap(heatdata, cluster_rows = hc.row, show_rownames = FALSE, color = colorRampPalette(c("blue","white","red"))(100), annotation_col = annot_col)
+
+```
+
+### HkNR vs. Cancer
+
+Reference level = HkNR
+
+```{r}
+hknr.vs.cancer <- eSet_wo_infl[, which(pData(eSet_wo_infl)$Class %in% c('OSCC', 'HkNR'))]
+colData <- data.frame(condition=hknr.vs.cancer$Class)
+colData$sex <- hknr.vs.cancer$Sex
+colData$smoke <- hknr.vs.cancer$imputed_smoking_label
+#make DESeq2 expected format for diffex analysis
+dds <- DESeq2::DESeqDataSetFromMatrix(countData=exprs(hknr.vs.cancer), 
+                                      colData=colData,
+                                      design = ~sex+smoke+condition)
+dds$condition <- relevel(dds$condition, ref = 'HkNR')
+
+#perform diffex
+dds_results <- DESeq2::DESeq(dds)
+#get the results in a nice tabular format
+results_hknr.vs.cancer<- DESeq2::results(dds_results)
+results_hknr.vs.cancer <- results_hknr.vs.cancer[order(results_hknr.vs.cancer$padj),]
+#DT::datatable(as.data.frame(results_other.vs.control))
+```
+
+```{r}
+results_hknr.vs.cancer <- results_hknr.vs.cancer[!is.na(results_hknr.vs.cancer$padj),]
+c("fdr<=0.05"=sum(results_hknr.vs.cancer$padj<=.05),
+  "fdr<=0.01"=sum(results_hknr.vs.cancer$padj<=.01),
+  "fdr<=0.001"=sum(results_hknr.vs.cancer$padj<=.001))
+```
+
+```{r}
+hknr.vs.cancer_up <- rownames(results_hknr.vs.cancer[which((results_hknr.vs.cancer$padj <= fdr)&(results_hknr.vs.cancer$log2FoldChange> +max_fc)),])
+hknr.vs.cancer_down <- rownames(results_hknr.vs.cancer[which((results_hknr.vs.cancer$padj <= fdr)&(results_hknr.vs.cancer$log2FoldChange < -min_fc)),])
+
+hknr.vs.cancer_marker_list <- list(hknr.vs.cancer_up, hknr.vs.cancer_down)
+
+DT::datatable(data.frame(results_hknr.vs.cancer[results_hknr.vs.cancer$padj<=.05 & results_hknr.vs.cancer$log2FoldChange >= 1.5, ]), caption = "HkNR.vs.Cancer-Upregulated")
+DT::datatable(data.frame(results_hknr.vs.cancer[results_hknr.vs.cancer$padj<=.05 & results_hknr.vs.cancer$log2FoldChange <= -1.5, ]), caption = "HkNR.vs.Cancer-Downregulated")
+```
+
+```{r}
+topgenes <- unlist(hknr.vs.control_marker_list)
+heatdata <- log2(exprs(hknr.vs.cancer)[topgenes,]+1)
+heatdata <- t(scale(t(heatdata)))
+heatmapkey <- paste("Scaled", "counts", sep = "\n")
+condition <- 'Class'
+
+hc.row <- hcopt(as.dist(1-cor(t(heatdata))),method="ward.D")
+annot_col <- pData(hknr.vs.cancer)[,condition, drop=FALSE]
+pheatmap::pheatmap(heatdata, cluster_rows = hc.row, show_rownames = FALSE, color = colorRampPalette(c("blue","white","red"))(100), annotation_col = annot_col)
+
+```
+
+### HkNR vs. Dysplasia
+
+Reference level = HkNR
+
+```{r}
+hknr.vs.dys <- eSet_wo_infl[, which(pData(eSet_wo_infl)$Class %in% c('HkNR', 'Dysplasia'))]
+colData <- data.frame(condition=hknr.vs.dys$Class)
+colData$sex <- as.character(hknr.vs.dys$Sex)
+colData$smoke <- hknr.vs.dys$imputed_smoking_label
+#make DESeq2 expected format for diffex analysis
+dds <- DESeq2::DESeqDataSetFromMatrix(countData=exprs(hknr.vs.dys), 
+                                      colData=colData,
+                                      design = ~sex+smoke+condition)
+dds$condition <- relevel(dds$condition, ref = 'HkNR')
+
+#perform diffex
+dds_results <- DESeq2::DESeq(dds)
+#get the results in a nice tabular format
+results_hknr.vs.dys<- DESeq2::results(dds_results)
+results_hknr.vs.dys <- results_hknr.vs.dys[order(results_hknr.vs.dys$padj),]
+#DT::datatable(as.data.frame(results_other.vs.control))
+```
+
+```{r}
+results_hknr.vs.dys <- results_hknr.vs.dys[!is.na(results_hknr.vs.dys$padj),]
+c("fdr<=0.05"=sum(results_hknr.vs.dys$padj<=.05),
+  "fdr<=0.01"=sum(results_hknr.vs.dys$padj<=.01),
+  "fdr<=0.001"=sum(results_hknr.vs.dys$padj<=.001))
+```
+
+```{r}
+hknr.vs.dys_up <- rownames(results_hknr.vs.dys[which((results_hknr.vs.dys$padj <= fdr)&(results_hknr.vs.dys$log2FoldChange> +max_fc)),])
+hknr.vs.dys_down <- rownames(results_hknr.vs.dys[which((results_hknr.vs.dys$padj <= fdr)&(results_hknr.vs.dys$log2FoldChange < -min_fc)),])
+
+hknr.vs.dys_marker_list <- list(hknr.vs.dys_up, hknr.vs.dys_down)
+
+DT::datatable(data.frame(results_hknr.vs.dys[results_hknr.vs.dys$padj<=.05 & results_hknr.vs.dys$log2FoldChange >= 1.5, ]), caption = "HkNR.vs.Dys-Upregulated")
+DT::datatable(data.frame(results_hknr.vs.dys[results_hknr.vs.dys$padj<=.05 & results_hknr.vs.dys$log2FoldChange <= -1.5, ]), caption = "HkNR.vs.Dys-Downregulated")
+```
+
+```{r}
+topgenes <- unlist(hknr.vs.dys_marker_list)
+heatdata <- log2(exprs(hknr.vs.dys)[topgenes,]+1)
+heatdata <- t(scale(t(heatdata)))
+heatmapkey <- paste("Scaled", "counts", sep = "\n")
+condition <- 'Class'
+
+hc.row <- hcopt(as.dist(1-cor(t(heatdata))),method="ward.D")
+annot_col <- pData(hknr.vs.dys)[,condition, drop=FALSE]
+pheatmap::pheatmap(heatdata, cluster_rows = hc.row, show_rownames = FALSE, color = colorRampPalette(c("blue","white","red"))(100), annotation_col = annot_col)
+
+```
+
+
+## Marker info
+
+### Pairwise Differential Markers Summary
+```{r}
+num_marker2 <- c("fdr<=0.05"=sum(results_cancer.vs.control$padj<=.05),
+                 "fdr<=0.01"=sum(results_cancer.vs.control$padj<=.01),
+                 "fdr<=0.001"=sum(results_cancer.vs.control$padj<=.001),
+                 "up reg"= length(cancer.vs.control_up),
+                 "down reg"= length(cancer.vs.control_down),
+                 "fdr<=0.05"=sum(results_dys.vs.control$padj<=.05),
+                 "fdr<=0.01"=sum(results_dys.vs.control$padj<=.01),
+                 "fdr<=0.001"=sum(results_dys.vs.control$padj<=.001),
+                 "up reg"= length(dys.vs.control_up),
+                 "down reg"= length(dys.vs.control_down),
+                 "fdr<=0.05"=sum(results_hknr.vs.control$padj<=.05),
+                 "fdr<=0.01"=sum(results_hknr.vs.control$padj<=.01),
+                 "fdr<=0.001"=sum(results_hknr.vs.control$padj<=.001),
+                 "up reg"= length(hknr.vs.control_up),
+                 "down reg"= length(hknr.vs.control_down),
+                 "fdr<=0.05"=sum(results_dys.vs.cancer$padj<=.05),
+                 "fdr<=0.01"=sum(results_dys.vs.cancer$padj<=.01),
+                 "fdr<=0.001"=sum(results_dys.vs.cancer$padj<=.001),
+                 "up reg"= length(dys.vs.cancer_up),
+                 "down reg"= length(dys.vs.cancer_down),
+                 "fdr<=0.05"=sum(results_hknr.vs.cancer$padj<=.05),
+                 "fdr<=0.01"=sum(results_hknr.vs.cancer$padj<=.01),
+                 "fdr<=0.001"=sum(results_hknr.vs.cancer$padj<=.001),
+                 "up reg"= length(hknr.vs.cancer_up),
+                 "down reg"= length(hknr.vs.cancer_down),
+                "fdr<=0.05"=sum(results_hknr.vs.dys$padj<=.05),
+                 "fdr<=0.01"=sum(results_hknr.vs.dys$padj<=.01),
+                 "fdr<=0.001"=sum(results_hknr.vs.dys$padj<=.001),
+                 "up reg"= length(hknr.vs.dys_up),
+                 "down reg"= length(hknr.vs.dys_down)
+                )
+df2 <- data.frame(matrix(t(num_marker2), nrow = 6, ncol = 5, byrow = TRUE))
+names(df2)<- c("fdr<=0.05", "fdr<=0.01", "fdr<=0.001", "up reg", "down reg")
+rownames(df2)<- c("Cancer vs. Control", "Dysplasia vs. Control", "HkNR vs. Control",  "Dysplasia vs. Cancer", "HkNR vs. Cancer", "HkNR vs. Dysplasia")
+DT::datatable(as.data.frame(df2))
+pheatmap::pheatmap(df2, cluster_rows = FALSE, cluster_cols = FALSE)
+```
+
+
+## Diffex Results(in Excel)
+
+```{r eval=F}
+library(xlsx)
+
+#Pairwise results
+xlsx::write.xlsx(x=results_cancer.vs.control, file = file.path(PATH, "results/PML.DiffEx.results.Can.vs.Ctrl.xlsx"), row.names = TRUE)
+xlsx::write.xlsx(x=results_dys.vs.control, file = file.path(PATH, "results/PML.DiffEx.results.Dys.vs.Ctrl.xlsx"), row.names = TRUE)
+xlsx::write.xlsx(x=results_hknr.vs.control, file.path(PATH, "results/PML.DiffEx.results.Hknr.vs.Ctrl.xlsx"),row.names = TRUE)
+
+xlsx::write.xlsx(x=results_dys.vs.cancer, file.path(PATH, "results/PML.DiffEx.results.Dys.vs.Can.xlsx"),row.names = TRUE)
+xlsx::write.xlsx(x=results_hknr.vs.cancer, file.path(PATH, "results/PML.DiffEx.results.Hknr.vs.Can.xlsx"),row.names = TRUE)
+
+xlsx::write.xlsx(x=results_hknr.vs.dys, file.path(PATH, "results/PML.DiffEx.results.Hknr.vs.Dys.xlsx"),row.names = TRUE)
+
+```
+
+Store diffanal signatures to be used in GSEA analysis.
+
+```{r}
+cancer.vs.control_sign <- list(up= cancer.vs.control_marker_list[[1]],
+                              down=cancer.vs.control_marker_list[[2]])
+
+dys.vs.control_sign <- list(up=dys.vs.control_marker_list[[1]],
+                             down=dys.vs.control_marker_list[[2]])
+
+hknr.vs.control_sign <- list(up=hknr.vs.control_marker_list[[1]],
+                             down=hknr.vs.control_marker_list[[2]])
+
+dys.vs.cancer_sign <- list(up=dys.vs.cancer_marker_list[[1]],
+                             down=dys.vs.cancer_marker_list[[2]])
+
+hknr.vs.cancer_sign <- list(up=hknr.vs.cancer_marker_list[[1]],
+                             down=hknr.vs.cancer_marker_list[[2]])
+
+hknr.vs.dys_sign <- list(up=hknr.vs.dys_marker_list[[1]],
+                             down=hknr.vs.dys_marker_list[[2]])
+
+#with control
+signatures1 <- list("cancer.vs.control_up"=cancer.vs.control_marker_list[[1]],
+                    "cancer.vs.control_down"= cancer.vs.control_marker_list[[2]],
+                    "dys.vs.control_up"=dys.vs.control_marker_list[[1]],
+                    "dys.vs.control_down"=dys.vs.control_marker_list[[2]],
+                    "hknr.vs.control_up"  =hknr.vs.control_marker_list[[1]],
+                    "hknr.vs.control_down"=hknr.vs.control_marker_list[[2]]
+                   )
+
+#with cancer
+signatures2 <- list("dys.vs.cancer_up"=dys.vs.cancer_marker_list[[1]],
+                    "dys.vs.cancer_down"=dys.vs.cancer_marker_list[[2]],
+                    "hknr.vs.cancer_up"=hknr.vs.cancer_marker_list[[1]],
+                    "hknr.vs.cancer_down" =hknr.vs.cancer_marker_list[[2]]
+                    )
+
+
+ #pairwise(infl, hknr, dys)
+signatures3 <- list("hknr.vs.dys_up"=hknr.vs.dys_marker_list[[1]],
+                    "hknr.vs.dys_down"=hknr.vs.dys_marker_list[[2]]
+                    )
+
+list_signs_wo_infl <- list(signatures1, signatures2, signatures3)
+#saveRDS(list_signs_wo_infl, file = file.path(PATH, "results/06_22_pml_signatures_w_sex_smoke_logFC1.5_fdr0.05.RDS"))
+```
+

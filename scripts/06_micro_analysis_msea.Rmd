@@ -1,0 +1,624 @@
+---
+title: "PML Microbiome Analysis w/o Infl"
+author: "M. Muzamil Khan"
+date: "06/23/2022"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "/Users/mmkhan/Documents/Research/pml/pml_wo_infl/pml_github")
+```
+
+```{r warning=FALSE, message=F}
+library(ggplot2)
+library(stringr)
+library(DT)
+library(plyr)
+library(dplyr)
+library(biomaRt)
+library(Biobase)
+library(reshape2)
+library(formattable)
+library(VennDiagram)
+library(hypeR)
+library(xlsx)
+library(animalcules)
+library(magrittr)
+library(SummarizedExperiment)
+library(ggsci)
+library(eply)
+library(igraph)
+PATH <- getwd()
+```
+
+# Microbiome Analysis 
+
+Microbiome analysis of oral PMLs and cancer from total trx sequencing. Pathoscope was used to filter, align and map the reads to several organisms including bacterial, viral and fungi.
+
+## load host eset {.tabset .tabset-fade .tabset-pills}
+
+Load eset
+
+```{r}
+eset <- readRDS(file.path(PATH, "data/2021_08_20_eset_imputed.RDS"))
+eSet_wo_infl <- eset[, which(pData(eset)$Class != 'Inflammatory')]
+table(eSet_wo_infl$Class)
+
+eSet_wo_infl$Class <- recode(eSet_wo_infl$Class, "Cancer"="OSCC")
+eSet_wo_infl$Class <- factor(eSet_wo_infl$Class, levels = c("Control", "HkNR", "Dysplasia", "OSCC"))
+
+cpm_eset <- eSet_wo_infl
+exprs(cpm_eset) <- apply(exprs(cpm_eset), 2, function(x) {x/(sum(x)/1000000)})
+print(dim(cpm_eset))
+
+cpm_eset$Class <- recode(cpm_eset$Class, "Control"="1-Control", "HkNR"="2-HkNR", "Dysplasia"="3-Dysplasia", "OSCC"="4-OSCC")
+cpm_eset$Class <- factor(cpm_eset$Class, levels = c("1-Control", "2-HkNR", "3-Dysplasia", "4-OSCC"))
+```
+
+
+## load animalcules MAE {.tabset .tabset-fade .tabset-pills}
+New animalcules file w/o infl
+
+File created from the shiny app with run_animalcules() easy-to-upload .tsv files from pathoscope. 
+
+```{r warning=F}
+MAE <- readRDS(file.path(PATH, "data/animalcules_data_2022-03-14.rds"))
+
+colData(MAE[['MicrobeGenetics']]) <- cbind(colData(MAE[['MicrobeGenetics']]), "Sample_ID"=rownames(colData(MAE[['MicrobeGenetics']])))
+    
+#add smoking and progression status to colData
+colData(MAE[['MicrobeGenetics']]) <- cbind(colData(MAE[['MicrobeGenetics']]), pData(cpm_eset)[match(MAE[['MicrobeGenetics']]$Sample_ID, gsub(cpm_eset$Sample_ID, pattern = "_", replacement = "-")), c('Smoking_status', 'imputed_smoking_label', 'Progression_status')])
+    
+MAE[['MicrobeGenetics']]$Progression_status <- ifelse(is.na(MAE[['MicrobeGenetics']]$Progression_status) | (MAE[['MicrobeGenetics']]$Progression_status =="Stable"), MAE[['MicrobeGenetics']]$Class, MAE[['MicrobeGenetics']]$Progression_status)
+
+p1 <- animalcules::relabu_barplot(MAE,
+                    tax_level="phylum",
+                    sort_by= "conditions",
+                    sample_conditions=c('Class'),
+                    show_legend=TRUE)
+p1                 
+
+p2 <- animalcules::relabu_barplot(MAE,
+                    tax_level="genus",
+                    sort_by= "conditions",
+                    sample_conditions=c('Class'),
+                    show_legend=TRUE)
+p2
+
+p3 <- animalcules::relabu_barplot(MAE,
+                    tax_level="species",
+                    sort_by= "conditions",
+                    sample_conditions=c('Class'),
+                    show_legend=TRUE)
+p3
+
+```
+
+
+## Wrappers
+
+```{r}
+## creating a relabu barplots wrapper to rotate the axix but didn't work
+relabu_wrapper <- function (MAE, tax_level, order_organisms = c(), sort_by = c("nosort", 
+  "conditions", "organisms", "alphabetically"), group_samples = FALSE, 
+  group_conditions = "ALL", sample_conditions = c(), isolate_samples = c(), 
+  discard_samples = c(), show_legend = TRUE) 
+{
+  sort_by <- match.arg(sort_by)
+  MAE <- mae_pick_samples(MAE, isolate_samples, discard_samples)
+  microbe <- MAE[["MicrobeGenetics"]]
+  tax_table <- as.data.frame(rowData(microbe))
+  sam_table <- as.data.frame(colData(microbe))
+  counts_table <- as.data.frame(assays(microbe))[, rownames(sam_table)]
+  sam_table %<>% df_char_to_factor()
+  relabu_table <- counts_table %>% upsample_counts(tax_table, 
+    tax_level) %>% counts_to_relabu() %>% base::t() %>% 
+    base::as.data.frame()
+  if (group_samples & !is.null(group_conditions)) {
+    if (group_conditions == "ALL") {
+      relabu_table$covariate <- rep("ALL", nrow(relabu_table))
+    }
+    else {
+      relabu_table$covariate <- sam_table[[group_conditions]]
+    }
+    relabu_table <- relabu_table %>% reshape2::melt(id.vars = "covariate") %>% 
+      S4Vectors::aggregate(. ~ variable + covariate, ., 
+        mean) %>% reshape2::dcast(formula = covariate ~ 
+      variable) %>% magrittr::set_rownames(.[["covariate"]]) %>% 
+      dplyr::select(-one_of(c("covariate")))
+    sam_table <- rownames(relabu_table) %>% as.data.frame() %>% 
+      magrittr::set_colnames(c(group_conditions)) %>% 
+      magrittr::set_rownames(rownames(relabu_table))
+  }
+  relabu_table <- relabu_table[, order(colSums(relabu_table)), 
+    drop = FALSE]
+  if (!is.null(order_organisms)) {
+    org_order <- c(setdiff(colnames(relabu_table), order_organisms), 
+      rev(order_organisms))
+    relabu_table <- relabu_table[, org_order]
+  }
+  if (sort_by == "alphabetically") {
+    org_order <- sort(colnames(relabu_table), decreasing = TRUE)
+    relabu_table <- relabu_table[, org_order]
+  }
+  if (sort_by == "organisms") {
+    for (i in seq_len(ncol(relabu_table))) {
+      relabu_table <- relabu_table[order(relabu_table[, 
+        i]), ]
+    }
+  }
+  if (!is.null(sample_conditions) || (group_samples && group_conditions != 
+    "ALL")) {
+    if (!group_samples) {
+      sam_table <- sam_table[, sample_conditions, drop = FALSE]
+    }
+    if (sort_by == "conditions") {
+      for (i in ncol(sam_table):1) {
+        sam_table <- sam_table[order(sam_table[[i]]), 
+          , drop = FALSE]
+      }
+      relabu_table <- relabu_table[order(match(rownames(relabu_table), 
+        rownames(sam_table))), , drop = FALSE]
+    }
+    else {
+      sam_table <- sam_table[order(match(rownames(sam_table), 
+        rownames(relabu_table))), , drop = FALSE]
+    }
+    if (nrow(sam_table) > 1) {
+      hover.txt <- c()
+      for (i in seq_len(ncol(sam_table))) {
+        hover.txt <- cbind(hover.txt, as.character(sam_table[[i]]))
+      }
+      mat <- sam_table %>% data.matrix() %>% apply(2, 
+        function(x) (x - min(x))/(max(x) - min(x)))
+      hm <- plotly::plot_ly(x = colnames(mat), y = rownames(mat), 
+        z = mat, type = "heatmap", showscale = FALSE,
+        hoverinfo = "x+y+text", text = hover.txt) %>% 
+        layout(xaxis = list(title = "", tickangle = -45), 
+          yaxis = list(showticklabels = FALSE, type = "category", 
+            ticks = ""))
+    }
+  }
+  relabu_table$samples <- rownames(relabu_table)
+  sbp <- plotly::plot_ly(relabu_table, y = ~samples, x = relabu_table[[colnames(relabu_table)[1]]], 
+    type = "bar", textposition = "outside", orientaton="h",
+    name = substr(colnames(relabu_table)[1], 1, 40)) %>% 
+    layout(font = list(size = 10), xaxis = list(title = "Relative Abundance", 
+      automargin = TRUE), yaxis = list(title = "", type = "category", 
+      tickmode = "array", tickvals = rownames(relabu_table), 
+      showticklabels = FALSE, categoryorder = "trace", 
+      automargin = TRUE), barmode = "stack", showlegend = show_legend)
+  for (i in 2:(ncol(relabu_table) - 1)) {
+    sbp <- add_trace(sbp, x = relabu_table[[colnames(relabu_table)[i]]], 
+      name = substr(colnames(relabu_table)[i], 1, 40))
+  }
+  if (exists("hm") && nrow(sam_table) > 1) {
+    hm_sbp <- subplot(hm, sbp, widths = c(0.1, 0.9))
+    hm_sbp$elementId <- NULL
+    return(hm_sbp)
+  }
+  else {
+    sbp$elementId <- NULL
+    return(sbp)
+  }
+}
+
+
+relabu_boxplot_wrapper <- function (MAE, tax_level, condition, organisms = c(), datatype = c("counts", 
+  "relative abundance", "logcpm")) 
+{
+  datatype <- match.arg(datatype)
+  microbe <- MAE[["MicrobeGenetics"]]
+  tax_table <- as.data.frame(rowData(microbe))
+  sam_table <- as.data.frame(colData(microbe))
+  counts_table <- as.data.frame(assays(microbe))[, rownames(sam_table)]
+  sam_table %<>% df_char_to_factor()
+  df <- counts_table %>% upsample_counts(tax_table, tax_level) %>% 
+    {
+      if (datatype == "relative abundance") {
+        animalcules::counts_to_relabu(.)
+      }
+      else if (datatype == "logcpm") {
+        animalcules::counts_to_logcpm(.)
+      }
+      else {
+        .
+      }
+    } %>% .[organisms, , drop = FALSE] %>% t() %>% as.data.frame() %>% 
+    merge(sam_table[, condition, drop = FALSE], by = 0, 
+      all = TRUE) %>% reshape2::melt(by = organisms, variable.name = "organisms")
+  
+   g <- ggplot2::ggplot(df, 
+                       ggplot2::aes(x = organisms, y = value, color = Class, fill = Class)) + 
+    geom_boxplot() + 
+    viridis::scale_color_viridis(alpha = 0.90, discrete=T)+
+    viridis::scale_fill_viridis(alpha = 0.90, discrete =T)+
+    ggplot2::geom_jitter(size=0.2) +
+    theme_bw() + labs(y = "log-CPM")+
+    ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+  return(g)
+}
+
+```
+
+## Diversity plots
+
+```{r}
+alpha_diversity_wrapper <- function (MAE, tax_level, condition, alpha_metric = c("inverse_simpson", 
+  "gini_simpson", "shannon", "fisher", "coverage", "unit")) 
+{
+  microbe <- MAE[["MicrobeGenetics"]]
+  tax_table <- as.data.frame(SummarizedExperiment::rowData(microbe))
+  sam_table <- as.data.frame(SummarizedExperiment::colData(microbe))
+  counts_table <- as.data.frame(SummarizedExperiment::assays(microbe))[, rownames(sam_table)]
+  counts_table %<>% upsample_counts(tax_table, tax_level)
+  sam_table$richness <- diversities(counts_table, index = alpha_metric)
+  colnames(sam_table)[ncol(sam_table)] <- "richness"
+  colnames(sam_table)[which(colnames(sam_table) == condition)] <- "condition"
+  
+  g <- ggplot2::ggplot(sam_table, 
+                       ggplot2::aes(condition, richness, color = condition, fill = condition)) + 
+    geom_boxplot() + 
+    viridis::scale_color_viridis(alpha = 0.90, discrete=TRUE)+
+    viridis::scale_fill_viridis(alpha = 0.90, discrete = TRUE)+
+    ggplot2::geom_jitter(size=0.3) +
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format') +
+    theme_bw() +
+    ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    ggplot2::labs(title = paste("Alpha diversity between ", 
+                                condition, " (", alpha_metric, ")", sep = ""))
+    g <- g + labs(y = alpha_metric)
+    return(g)
+}
+
+```
+
+```{r}
+animalcules::alpha_div_boxplot(MAE = MAE, tax_level = "genus", condition = "Class", alpha_metric = "shannon")
+animalcules::diversity_beta_heatmap(MAE = MAE, tax_level = "genus", input_beta_method = "bray", input_bdhm_select_conditions =   c("Class"), input_bdhm_sort_by = "conditions")
+```
+
+```{r warning=F}
+suppressPackageStartupMessages(library(plotly))
+
+animalcules::alpha_div_boxplot(MAE = MAE, tax_level = "genus", condition = "Class", alpha_metric = "shannon")
+animalcules::alpha_div_boxplot(MAE = MAE, tax_level = "species", condition = "Class", alpha_metric = "shannon")
+
+animalcules::diversity_beta_heatmap(MAE = MAE, tax_level = "genus", input_beta_method = "bray",input_bdhm_select_conditions =   "Class", input_bdhm_sort_by = "conditions")
+animalcules::diversity_beta_heatmap(MAE = MAE, tax_level = "species", input_beta_method = "bray",input_bdhm_select_conditions =   "Class", input_bdhm_sort_by = "conditions")
+```
+
+## Rel abu of MoI {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+relabu_boxplot_wrapper(MAE = MAE, tax_level = "genus", condition = "Class", organisms = c("Fusobacterium", "Neisseria", "Prevotella", "Shewanella", "Streptococcus", "Candida"), datatype = "logcpm")
+```
+
+## Dim. Reduction {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+animalcules::dimred_umap(MAE = MAE,tax_level = "genus", color = "Class", n_neighbors = 5, n_epochs = 1000, cx = 1, cy = 2, cz = 3)
+
+animalcules::dimred_pcoa(MAE = MAE,tax_level = "genus", color = "Class", method = "jaccard", axx = 1, axy = 2, axz = 3)
+```
+
+## Diff. Exp {.tabset .tabset-fade .tabset-pills}
+
+```{r warning=F,}
+diffanal <- differential_abundance(MAE,
+                            tax_level="genus",
+                            input_da_condition=c("Class"),
+                            input_da_condition_covariate = c("Sex", "imputed_smoking_label"),
+                            min_num_filter  = 500,
+                            input_da_padj_cutoff = 0.05, method = 'DESeq2')
+DT::datatable(diffanal)
+#write.xlsx(diffanal, file=file.path(PATH, "06_30_diffanal_microbes.xlsx"))
+
+#get microbes unique to each contrast-condition
+#up in first group and down in the other - up reg
+microbe_list <- list("ctrl.vs.hknr_up"=diffanal$microbe[which(diffanal$Contrast=='1-Control vs. 2-HkNR' & diffanal$padj <=0.05 & diffanal$log2FoldChange > 1)],
+     "ctrl.vs.hknr_down"=diffanal$microbe[which(diffanal$Contrast=='1-Control vs. 2-HkNR' & diffanal$padj <=0.05 & diffanal$log2FoldChange < -1)],
+      "ctrl.vs.dys_up"=diffanal$microbe[which(diffanal$Contrast=='1-Control vs. 3-Dysplasia' & diffanal$padj <=0.05 & diffanal$log2FoldChange > 1)],
+     "ctrl.vs.dys_down"=diffanal$microbe[which(diffanal$Contrast=='1-Control vs. 3-Dysplasia' & diffanal$padj <=0.05 & diffanal$log2FoldChange < -1)],
+     "ctrl.vs.cancer_up"=diffanal$microbe[which(diffanal$Contrast=='1-Control vs. 4-Cancer' & diffanal$padj <=0.05 & diffanal$log2FoldChange > 1)],
+     "ctrl.vs.cancer_down"=diffanal$microbe[which(diffanal$Contrast=='1-Control vs. 4-Cancer' & diffanal$padj <=0.05 & diffanal$log2FoldChange < -1)])
+microbe_list
+
+#saveRDS(microbe_list, file.path("results/06_30_microbe_diffex_list.RDS"))
+```
+
+## Violin Plots {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+volcano_wrapper <- function(df){
+  ggplot(data=df, aes(x=log2FoldChange, y=-log10(padj), col=diffex, label=microbe)) +
+        geom_point() + 
+        theme_minimal() +
+        geom_text_repel() +
+        scale_color_manual(values=c("red", "blue")) +
+        geom_vline(xintercept=c(-0.6, 0.6), col="red") +
+        geom_hline(yintercept=-log10(0.05), col="red")
+}
+```
+
+### Cancer vs Ctrl
+
+```{r}
+library(ggrepel)
+df <- diffanal[which(diffanal$Contrast=='1-Control vs. 4-Cancer'),]
+df$log2FoldChange <- -df$log2FoldChange
+df$diffex <- ifelse(df$log2FoldChange >= 1 & df$padj <= 0.05, "Up", ifelse(df$log2FoldChange <= -1 & df$padj <= 0.05, "Down", "No diff"))
+df$diffex <- factor(df$diffex, levels = c("Up", "Down")) 
+
+g1 <- volcano_wrapper(df = df)
+g1
+```
+
+### Dys vs Ctrl
+
+```{r}
+library(ggrepel)
+df <- diffanal[which(diffanal$Contrast=='1-Control vs. 3-Dysplasia'),]
+df$log2FoldChange <- -df$log2FoldChange
+df$diffex <- ifelse(df$log2FoldChange >= 1 & df$padj <= 0.05, "Up", ifelse(df$log2FoldChange <= -1 & df$padj <= 0.05, "Down", "No diff"))
+df$diffex <- factor(df$diffex, levels = c("Up", "Down")) 
+
+g2 <- volcano_wrapper(df = df)
+g2
+```
+
+### HkNR vs Ctrl
+
+```{r}
+library(ggrepel)
+df <- diffanal[which(diffanal$Contrast=='1-Control vs. 2-HkNR'),]
+df$log2FoldChange <- -df$log2FoldChange
+df$diffex <- ifelse(df$log2FoldChange >= 1 & df$padj <= 0.05, "Up", ifelse(df$log2FoldChange <= -1 & df$padj <= 0.05, "Down", "No diff"))
+df$diffex <- factor(df$diffex, levels = c("Up", "Down")) 
+
+g3 <- volcano_wrapper(df = df)
+g3
+```
+
+
+
+## MSEA {.tabset .tabset-fade .tabset-pills}
+
+Microbe set enrichment analysis [(MSEA)](https://www.nature.com/articles/s41598-020-78511-y#Sec18)
+Load results from msea - ran on scc with a jupyter notebook
+
+### OSCC vs. Ctrl
+
+```{r}
+msea_cancer_up <- read.csv(file.path(PATH, "results/msea_cancer_ctrl_up.csv"))
+msea_cancer_dn <- read.csv(file.path(PATH, "results/msea_cancer_ctrl_dn.csv"))
+msea_pml_up <- read.csv(file.path(PATH, "results/msea_pml_ctrl_up.csv"))
+msea_pml_dn <- read.csv(file.path(PATH, "results/msea_pml_ctrl_dn.csv"))
+
+msea_cancer_up <- msea_cancer_up[msea_cancer_up$qvalue<=0.05,]
+msea_cancer_dn <- msea_cancer_dn[msea_cancer_dn$qvalue<=0.05,]#none significant
+msea_pml_up <- msea_pml_up[msea_pml_up$qvalue<=0.05,]
+msea_pml_dn <- msea_pml_dn[msea_pml_dn$qvalue<=0.05,]#none significant
+
+msea_genes <- list("cancer" = msea_cancer_up$term, 
+                   "pml"=msea_pml_up$term)
+
+HALLMARK <-  msigdb_gsets("Homo sapiens", "H", "")
+names(HALLMARK$genesets) <- names(HALLMARK$genesets) %>% strsplit( "HALLMARK_" ) %>% sapply( tail, 1 )
+
+REACTOME <- msigdb_gsets(species="Homo sapiens", category="C2", subcategory="CP:REACTOME", clean = TRUE)
+names(REACTOME$genesets) <- names(REACTOME$genesets) %>% strsplit( "REACTOME_" ) %>% sapply( tail, 1 )
+
+
+hyp_mic1 <- hypeR(signature = msea_genes, genesets = HALLMARK, background = 1300)
+hyp_mic2 <- hypeR(signature = msea_genes, genesets = HALLMARK)
+hyp_dots(hyp_mic1, merge = T, fdr = 0.1, title = "Hallmark(bck=1300)")
+hyp_mic1$as.list()
+hyp_dots(hyp_mic2, merge = T, fdr = 0.1, title = "Hallmark(bck=all)")
+hyp_mic2$as.list()
+
+hyp_mic3 <- hypeR(signature = msea_genes, genesets = REACTOME, background = 1300)
+hyp_mic4 <- hypeR(signature = msea_genes, genesets = REACTOME)
+hyp_dots(hyp_mic3, merge = T, fdr = 0.1, title = "Reactome(bck=1300)")
+hyp_mic3$as.list()
+hyp_dots(hyp_mic4, merge = T, fdr = 0.1, title = "Reactome(bck=all)")
+hyp_mic4$as.list()
+
+```
+
+
+### Cancer genes
+
+```{r}
+diffanal_res <- xlsx::read.xlsx(file.path(PATH, "results/pml_diffex_wo_infl/PML.DiffEx.results.Can.vs.Ctrl.xlsx"), sheetIndex = 1)
+diffanal_res <- diffanal_res[diffanal_res$padj<=0.05,]
+diff_cancer <- diffanal_res[diffanal_res$gene %in% msea_genes$cancer, ]
+
+ggplot(data = diff_cancer, aes(x=gene, y = log2FoldChange),)+
+  geom_bar(aes( fill=log2FoldChange>0), stat = "identity")+ 
+  theme_bw()+  
+  ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_fill_manual(guide = "none", breaks = c(TRUE, FALSE), values=c("blue4", "red"))
+```
+
+
+### Cancer vs Ctrl up
+
+```{r}
+library(tidyverse)
+msea_cancer_up_new<- separate_rows(msea_cancer_up, shared, sep = ",", convert = T)
+msea_cancer_up_new$shared <- gsub(msea_cancer_up_new$shared, pattern = "\\[", replacement = "")
+msea_cancer_up_new$shared <- gsub(msea_cancer_up_new$shared, pattern = "\\]", replacement = "")
+msea_cancer_up_new$shared <- gsub(msea_cancer_up_new$shared, pattern = "\\'", replacement = "")
+msea_cancer_up_new$shared <- gsub(msea_cancer_up_new$shared, pattern = " ", replacement = "")
+msea_cancer_up_new
+
+```
+
+### igraph
+
+```{r fig.height=10}
+
+tdf <- table(msea_cancer_up_new[, c('term', 'shared')])
+g <- graph.incidence(tdf, weighted = TRUE)
+is.bipartite(g)
+deg <- degree(g, mode="all")
+deg <- ifelse(names(deg) %in% msea_cancer_up_new$term, deg*5, deg)
+
+colrs <- c("green", "cyan")[V(g)$type + 1L]
+lay <- layout_as_bipartite(g)[,2:1]
+
+V(g)$shape <- ifelse(V(g) %in% msea_cancer_up_new$term, "square", "circle")
+
+plot(g, 
+     vertex.color = colrs, 
+     layout = lay, 
+     vertex.size=deg,
+     asp = 5,
+     vertex.size=c(15:24))
+
+```
+
+### Final igraph
+- Choose genes that come up diff analysis
+- to adjust for degree size for genes double it
+
+```{r fig.height=10}
+msea_cancer_up_de <- msea_cancer_up_new[msea_cancer_up_new$term %in% diff_cancer$gene, ]
+df <- msea_cancer_up_de[, c("term", "shared", "combined_score")]
+transformed_mat <- xtabs(combined_score~., df)
+attr(transformed_mat, "class") <- NULL #ignore this
+
+g <- graph.incidence(transformed_mat, weighted = TRUE)
+is.bipartite(g)
+deg <- degree(g, mode="all")
+colrs <- c("#FFD580","#6CA6CD")[V(g)$type + 1L]
+
+
+V(g)$shape <- ifelse(V(g)$name %in% unquote(msea_cancer_up_de$term), "circle", "square")
+
+LO = matrix(0, nrow=vcount(g), ncol=2)
+LO[!V(g)$type, 2] = 1
+
+LO[V(g)$type, 1]  = rank(V(g)$name[V(g)$type]) - 1
+LO[!V(g)$type, 1] = (rank(V(g)$name[!V(g)$type]) - 1) * 
+    (sum(V(g)$type) - 1)  /  (sum(!V(g)$type) - 1)
+
+#for a vertical bipartite graph
+LO <- LO[,2:1]
+
+
+plot(g, 
+     vertex.color = adjustcolor(colrs,  alpha.f = .6), 
+     vertex.frame.color = colrs,
+     layout = LO, 
+     vertex.size = ifelse(V(g)$name %in% unquote(msea_cancer_up_de$term), deg*2, deg*1.95),
+     #vertex.size = deg*3,
+     vertex.label.dist = 0,
+     vertex.label.cex=0.3,
+     vertex.frame.width=0.1,
+     edge.width=abs(E(g)$weight)/200, 
+     vertex.label.family="Arial",
+     edge.color=ifelse(E(g)$weight > 0, "red","blue"),
+     asp = 2.5)
+```
+
+
+```{r}
+microbes_cancer_shared <- unique(msea_cancer_up_de$shared)
+DT::datatable(msea_cancer_up_de)
+```
+
+
+### PML vs. Ctrl
+
+```{r}
+diffanal_res_hknr <- xlsx::read.xlsx(file.path(PATH, "results/pml_diffex_wo_infl/PML.DiffEx.results.Hknr.vs.Ctrl.xlsx"), sheetIndex = 1)
+diffanal_res_dys <- xlsx::read.xlsx(file.path(PATH, "results/pml_diffex_wo_infl/PML.DiffEx.results.Dys.vs.Ctrl.xlsx"), sheetIndex = 1)
+
+diffanal_res_hknr$gene <- diffanal_res_hknr$NA.
+diffanal_res_dys$gene <- diffanal_res_dys$NA.
+
+diffanal_pml <- rbind(diffanal_res_dys, diffanal_res_hknr)
+
+diffanal_pml <- diffanal_pml[diffanal_pml$padj<=0.05,]
+diff_pml<- diffanal_pml[diffanal_pml$gene %in% msea_genes$pml, ]
+
+ggplot(data = diff_pml, aes(x=gene, y = log2FoldChange),)+
+  geom_bar(aes( fill=log2FoldChange>0), stat = "identity")+ 
+  theme_bw()+  
+  ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_fill_manual(guide = "none", breaks = c(TRUE, FALSE), values=c("blue4", "red"))
+```
+
+### PML vs Ctrl up
+
+```{r}
+msea_pml_up_new<- separate_rows(msea_pml_up, shared, sep = ",", convert = T)
+msea_pml_up_new$shared <- gsub(msea_pml_up_new$shared, pattern = "\\[", replacement = "")
+msea_pml_up_new$shared <- gsub(msea_pml_up_new$shared, pattern = "\\]", replacement = "")
+msea_pml_up_new$shared <- gsub(msea_pml_up_new$shared, pattern = "\\'", replacement = "")
+msea_pml_up_new$shared <- gsub(msea_pml_up_new$shared, pattern = " ", replacement = "")
+msea_pml_up_new
+
+```
+
+- Choose genes that come up diff analysis
+- to adjust for degree size for genes double it
+
+
+```{r}
+msea_pml_up_de <- msea_pml_up_new[msea_pml_up_new$term %in% diff_pml$gene, ]
+df <- msea_pml_up_de[, c("shared", "term", "combined_score")]
+transformed_mat <- xtabs(combined_score~., df)
+attr(transformed_mat, "class") <- NULL #ignore this
+
+g <- graph.incidence(transformed_mat, weighted = TRUE)
+is.bipartite(g)
+deg <- degree(g, mode="all")
+colrs <- c("#7EC384", "#FFD580")[V(g)$type + 1L]
+
+V(g)$shape <- ifelse(V(g)$name %in% unquote(msea_pml_up_de$term), "circle", "square")
+#V(g)$label.cez <- 1
+
+LO = matrix(0, nrow=vcount(g), ncol=2)
+LO[!V(g)$type, 2] = 1
+
+LO[V(g)$type, 1]  = rank(V(g)$name[V(g)$type]) - 1
+LO[!V(g)$type, 1] = (rank(V(g)$name[!V(g)$type]) - 1) * (sum(V(g)$type) - 1)  /  (sum(!V(g)$type) - 1)
+
+#for a vertical bipartite graph
+LO <- LO[,2:1]
+#LO[,2] <- LO[,2]*2
+
+plot(g, 
+     vertex.color = adjustcolor(colrs,  alpha.f = .6), 
+     vertex.frame.color = colrs,
+     layout = LO, 
+     vertex.size = ifelse(V(g)$name %in% unquote(msea_pml_up_de$term), deg*1.25, deg*1.25),
+     vertex.label.dist = ifelse(V(g)$name %in% unquote(msea_pml_up_de$term), 0, 0),
+     vertex.label.cex= ifelse(V(g)$name %in% unquote(msea_pml_up_de$term), 0.18, 0.35),
+     vertex.frame.width=0.1,
+     vertex.label.font=3,
+     edge.width=abs(E(g)$weight)/200, 
+     vertex.label.family="Arial",
+     edge.color=ifelse(E(g)$weight > 0, "red", "blue"),  asp = 3)
+
+```
+
+
+
+

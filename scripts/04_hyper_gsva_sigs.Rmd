@@ -1,0 +1,784 @@
+---
+title: "PML hypeR and GSVA"
+author: "M. Muzamil Khan"
+date: "02/22/2022"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+## Recap
+The summary statistics and respective plots along with eSet creation is in `00_summstats_eset.{Rmd, html}`, imputation with random forest is in `01_pml_imp_summary.{Rmd, html}`,  DimRed analysis is in `02_dimred_hvg.{Rmd, html}`. The differential expression analysis using DESeq2 along with significant marker info. is in `03_diffanalysis.{Rmd, html}`. This file contains GSVA analysis from signatures coming from relevant datasets along with hypeR GSEA from the signatures collected from differential anal results.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "/Users/mmkhan/Documents/Research/pml/pml_wo_infl/pml_github")
+```
+
+```{r warning=FALSE, message=F}
+library(ggplot2)
+library(stringr)
+library(DT)
+library(plyr)
+library(dplyr)
+library(biomaRt)
+library(Biobase)
+library(reshape2)
+library(formattable)
+library(VennDiagram)
+library(hypeR)
+library(xlsx)
+library(DESeq2)
+library(gridExtra)
+library(ggsci)
+PATH <- getwd()
+```
+
+## Load eSet {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+eset <- readRDS(file.path(PATH, "data/2021_08_20_eset_imputed.RDS"))
+eSet_wo_infl <- eset[, which(pData(eset)$Class != 'Inflammatory')]
+table(eSet_wo_infl$Class)
+
+eSet_wo_infl$Class <- recode(eSet_wo_infl$Class, "Cancer"="OSCC")
+eSet_wo_infl$Class <- factor(eSet_wo_infl$Class, levels = c("Control", "HkNR", "Dysplasia", "OSCC"))
+
+cpm_eset <- eSet_wo_infl
+exprs(cpm_eset) <- apply(exprs(cpm_eset), 2, function(x) {x/(sum(x)/1000000)})
+print(dim(cpm_eset))
+
+cpm_eset$Class <- recode(cpm_eset$Class, "Control"="1-Control", "HkNR"="2-HkNR", "Dysplasia"="3-Dysplasia", "OSCC"="4-OSCC")
+cpm_eset$Class <- factor(cpm_eset$Class, levels = c("1-Control", "2-HkNR", "3-Dysplasia", "4-OSCC"))
+
+list_signs <- readRDS(file.path(PATH, "results/06_22_pml_signatures_w_sex_smoke_logFC1.5_fdr0.05.RDS"))
+```
+
+## Global signatures from OPMD->TCGA_HNSCC->pEMT {.tabset .tabset-fade .tabset-pills}
+
+### OPMD signatures
+
+```{r}
+opmd <- list(up=c("SPRR2B", "DLX2", "SPRR2C", "CERS1", "CKB", "CYP19A1", "CARMIL3", "H2AC14", 
+         "TUBA1B"),
+         down=c("IER3", "NGEF", "TUBA4A", "ACP6", "SPIDR", "CD46", "GNPTAB", "LCA5", "ZMAT1",
+         "SLC9A9", "ZNF204P", "PTCHD1", "FAM46A", "LGR5", "MUC1", "COLCA2", "DM1-AS", "ZNF418", 'NECTIN3', "MLPH", 
+         "CCDC129", "TFCP2L1", "ATP6V1B1", "CRACR2B", "ERN2", "UGT1A6", "TLX1", "MUC16"))
+
+gsva_res_opmd <-  as.data.frame(t(GSVA::gsva(exprs(cpm_eset), opmd, verbose=FALSE)))
+gsva_res_opmd$diff <- gsva_res_opmd$up-gsva_res_opmd$down
+```
+
+```{r}
+gsva_res_opmd$Class <- cpm_eset$Class[match(rownames(gsva_res_opmd), colnames(cpm_eset))]
+opmd <- ggplot2::ggplot(gsva_res_opmd, ggplot2::aes_string(
+    x = 'Class', y = 'diff', fill='Class')) +
+    ggplot2::geom_boxplot() +
+    scale_color_npg(alpha = 0.8)+
+    scale_fill_npg(alpha = 0.7)+
+    ggplot2::geom_jitter(size=0.3) +
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format')+
+    labs(y = "GSVA Score", x = "Type")+
+    theme_bw()+
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 8),
+                 axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)),
+                 axis.text = element_text(size = 10, family='Helvetica', color="#222222"), 
+                 axis.title = element_text(size = 12, family='Helvetica', color="#222222"),
+                 legend.text = ggplot2::element_text(family='Helvetica', size=(10),  color="#222222"))
+
+  
+opmd
+
+```
+
+### TCGA Sigs
+
+```{r}
+tcga <- readRDS("~/Documents/Research/pml/tcga_sigs.rds")
+tcga_res <- GSVA::gsva(expr = exprs(cpm_eset), gset.idx.list = tcga)
+tcga_res_df <- as.data.frame(t(tcga_res))
+tcga_res_df$diff <- tcga_res_df$up - tcga_res_df$down
+#gsvaViolinplot(gsvaData = t(tcga_res_df), textsize = 10, eset = cpm_eset, title = 'TCGA')
+
+
+tcga_res_df$Class <- cpm_eset$Class[match(rownames(tcga_res_df), colnames(cpm_eset))]
+up <- ggplot2::ggplot(tcga_res_df, ggplot2::aes_string(
+    x = 'Class', y = 'up', fill='Class')) +
+    ggplot2::geom_boxplot() +
+    ggplot2::geom_jitter(size=0.3) +
+    scale_color_npg(alpha = 0.8)+
+    scale_fill_npg(alpha = 0.7)+
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format')+
+    labs(y = "GSVA Score", x = "Type")+
+    theme_bw()+
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 8),
+                 axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)),
+                 axis.text = element_text(size = 10, family='Helvetica', color="#222222"), 
+                 axis.title = element_text(size = 12, family='Helvetica', color="#222222"),
+                 legend.text = ggplot2::element_text(family='Helvetica', size=(10),  color="#222222"))
+
+  
+up
+
+down <- ggplot2::ggplot(tcga_res_df, ggplot2::aes_string(
+    x = 'Class', y = 'down', fill='Class')) +
+    ggplot2::geom_boxplot() +
+    ggplot2::geom_jitter(size=0.3) +
+    scale_color_npg(alpha = 0.8)+
+    scale_fill_npg(alpha = 0.7)+
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format')+
+    labs(y = "GSVA Score", x = "Type")+
+    theme_bw()+
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 8),
+                 axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)),
+                 axis.text = element_text(size = 10, family='Helvetica', color="#222222"), 
+                 axis.title = element_text(size = 12, family='Helvetica', color="#222222"),
+                 legend.text = ggplot2::element_text(family='Helvetica', size=(10),  color="#222222"))
+
+  
+down
+
+
+tcga <- ggplot2::ggplot(tcga_res_df, ggplot2::aes_string(
+    x = 'Class', y = 'diff', fill='Class')) +
+    ggplot2::geom_boxplot() +
+    ggplot2::geom_jitter(size=0.3) +
+    scale_color_npg(alpha = 0.8)+
+    scale_fill_npg(alpha = 0.7)+
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format')+
+    labs(y = "GSVA Score", x = "Type")+
+    theme_bw()+
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 8),
+                 axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)),
+                 axis.text = element_text(size = 10, family='Helvetica', color="#222222"), 
+                 axis.title = element_text(size = 12, family='Helvetica', color="#222222"),
+                 legend.text = ggplot2::element_text(family='Helvetica', size=(10),  color="#222222"))
+
+  
+tcga
+
+
+```
+
+### pEMT Signatures
+
+```{r}
+hnsc_sign <- readRDS(file.path("~/Documents/Research/HNSC_CuratedGenesets.rds"))
+hnsc_sign_epi <-  hnsc_sign[names(hnsc_sign) %in% c("Cell_Cycle_PMID29198524", "pEMT_PMID29198524", "Epithelial_Differentiation_1_PMID29198524", "Epithelial_Differentiation_2_PMID29198524", "Stress_PMID29198524", "Hypoxia_PMID29198524")]
+names(hnsc_sign_epi)<- sapply(names(hnsc_sign_epi), function(x) str_split(x, pattern = "_PMID")[[1]], USE.NAMES=FALSE)[1,]
+names(hnsc_sign_epi) <- recode(names(hnsc_sign_epi), "Epithelial_Differentiation_1"="Epi. Diff. 1", "Epithelial_Differentiation_2"="Epi. Diff. 2")
+gsva_res_epi <- as.data.frame(t(GSVA::gsva(exprs(cpm_eset), hnsc_sign_epi, verbose=FALSE)))
+gsva_res_epi$Class <- cpm_eset$Class[match(rownames(gsva_res_epi), colnames(cpm_eset))]
+
+pemt <- ggplot2::ggplot(gsva_res_epi, ggplot2::aes_string(
+    x = 'Class', y = 'pEMT', fill='Class')) +
+    ggplot2::geom_boxplot() +
+    scale_color_npg(alpha = 0.8)+
+    scale_fill_npg(alpha = 0.7)+
+    ggplot2::geom_jitter(size=0.3) +
+    labs(y = "GSVA Score", x = "Type")+ 
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format')+
+    theme_bw()+
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 8),
+                 axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)),
+                 axis.text = element_text(size = 10, family='Helvetica', color="#222222"), 
+                 axis.title = element_text(size = 12, family='Helvetica', color="#222222"),
+                 legend.text = ggplot2::element_text(family='Helvetica', size=(10),  color="#222222"))
+
+
+pemt
+```
+
+### Bronchial PMLs
+J. Beane Bronchial PML
+
+```{r}
+pml_genes <- readRDS("~/Downloads/JBeane_PML/combined_gene_set_symbols.rds")
+#names(pml_genes) <- paste("module", seq_len(length(names(pml_genes))), sep = "")
+names(pml_genes) <- paste(c("module6", "module1", "module5",  "module8", "module3", "module2", "module9", "module7", "module4"), sep = "")
+#selecting modules that show a positive trend
+pml_genes_prolif <- pml_genes[c('module5','module9', 'module8')]
+
+prolif_gsva <- GSVA::gsva(exprs(cpm_eset), pml_genes_prolif)
+prolif_res_df <- as.data.frame(t(prolif_gsva))
+prolif_res_df$Class <- cpm_eset$Class
+prolif1 <- ggplot2::ggplot(prolif_res_df, ggplot2::aes_string(
+    x = 'Class', y = 'module5', fill='Class')) +
+    ggplot2::geom_boxplot() +
+    scale_color_npg(alpha = 0.8)+
+    scale_fill_npg(alpha = 0.7)+
+    ggplot2::geom_jitter(size=0.3) +
+    labs(y = "GSVA Score", x = "Type")+ 
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format')+
+    theme_bw()+
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 8),
+                 axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)),
+                 axis.text = element_text(size = 10, family='Helvetica', color="#222222"), 
+                 axis.title = element_text(size = 12, family='Helvetica', color="#222222"),
+                 legend.text = ggplot2::element_text(family='Helvetica', size=(10),  color="#222222"),legend.position = "none")
+
+
+prolif1
+
+prolif2 <- ggplot2::ggplot(prolif_res_df, ggplot2::aes_string(
+    x = 'Class', y = 'module9', fill='Class')) +
+    ggplot2::geom_boxplot() +
+    scale_color_npg(alpha = 0.8)+
+    scale_fill_npg(alpha = 0.7)+
+    ggplot2::geom_jitter(size=0.3) +
+    labs(y = "GSVA Score", x = "Type")+ 
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format')+
+    theme_bw()+
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 8),
+                 axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)),
+                 axis.text = element_text(size = 10, family='Helvetica', color="#222222"), 
+                 axis.title = element_text(size = 12, family='Helvetica', color="#222222"),
+                 legend.text = ggplot2::element_text(family='Helvetica', size=(10),  color="#222222"), legend.position = "none")
+
+
+prolif2
+
+prolif3 <- ggplot2::ggplot(prolif_res_df, ggplot2::aes_string(
+    x = 'Class', y = 'module8', fill='Class')) +
+    ggplot2::geom_boxplot() +
+    scale_color_npg(alpha = 0.8)+
+    scale_fill_npg(alpha = 0.7)+
+    ggplot2::geom_jitter(size=0.3) +
+    labs(y = "GSVA Score", x = "Type")+ 
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format')+
+    theme_bw()+
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = 8),
+                 axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)),
+                 axis.text = element_text(size = 10, family='Helvetica', color="#222222"), 
+                 axis.title = element_text(size = 12, family='Helvetica', color="#222222"),
+                 legend.text = ggplot2::element_text(family='Helvetica', size=(10),  color="#222222"),legend.position = "none")
+
+
+prolif3
+```
+
+
+### CAF Signatures
+
+```{r}
+prog <- data.frame(t(exprs(cpm_eset)[c("PDGFRB", "COL1A1", "COL1A2", "COL3A1"),]))
+
+gsvaResT <- prog
+condition <- 'Class'
+cond <- apply(pData(cpm_eset)[, "Class",drop = FALSE],1, paste, collapse = "_")
+gsvaResT[, paste(condition, collapse = "_")] <- cond
+#gsvaResT$Class <- dplyr::recode_factor(gsvaResT$Class, 'Control'='1-Control',  'HkNR'='2-HkNR', 'Dysplasia'='3-Dysplasia', 'Cancer'='4-Cancer')
+
+gsvaResFlat <- reshape2::melt(gsvaResT, id.vars = paste(condition, collapse = "_"), variable.name = "pathway")
+
+g1 <- ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
+  x = paste(condition, collapse = "_"), y = "value",
+  color = paste(condition, collapse = "_"))) +
+  ggplot2::geom_boxplot() +
+  scale_color_npg(alpha = 0.8)+
+  scale_fill_npg(alpha = 0.7)+
+  ggplot2::geom_jitter(size=0.3) +
+  ggplot2::facet_wrap(~pathway, scale = "free_y",
+                      ncol = nrow(prog)) +
+  #ggpubr::stat_compare_means(method = "anova",  label = 'p.format')+
+  ggplot2::theme(strip.text.x = ggplot2::element_text(size = 10))+
+  ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(title = 'Fibroblast markers', y = "Counts(CPM)", x = "Class")+
+  theme(axis.text = element_text(size = 10), axis.title = element_text(size = 10, face = "bold"))
+g1
+```
+
+
+```{r}
+pdgfb <- xlsx::read.xlsx(file = file.path(PATH, "data/pdgfb_kartha_plosone_2016.xlsx"), sheetIndex = 1)
+pdgfb_genes <- pdgfb %>% dplyr::filter(Pearson.r >= 0.80)  %>% dplyr::select(Gene_ID)
+
+pdgfb_sig <- list("pdgfb"=vapply(strsplit(pdgfb_genes$Gene_ID, "|", fixed = TRUE), "[", "", 1))
+```
+
+```{r}
+pdgfb_gsva_res1 <- GSVA::gsva(expr = exprs(cpm_eset), gset.idx.list = pdgfb_sig)
+```
+
+```{r}
+gsvaViolinplot <- function(gsvaData, textsize, eset, title) {
+  gsvaResT <- data.frame(t(gsvaData))
+  condition <- 'Class'
+  cond <- apply(pData(cpm_eset)[, "Class",drop = FALSE],1, paste, collapse = "_")
+  gsvaResT[, paste(condition, collapse = "_")] <- cond
+  gsvaResFlat <- reshape2::melt(gsvaResT, id.vars = paste(condition,
+                                                          collapse = "_"),
+                                variable.name = "pathway")
+  ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
+    x = paste(condition, collapse = "_"), y = "value",
+    color = paste(condition, collapse = "_"))) +
+    ggplot2::geom_boxplot() +
+    scale_color_npg(alpha = 0.8)+
+  scale_fill_npg(alpha = 0.7)+
+  ggplot2::geom_jitter(size=0.3) +
+    ggplot2::facet_wrap(~pathway, scale = "free_y",
+                        ncol = ceiling(sqrt(nrow(gsvaData)))) +
+    ggpubr::stat_compare_means(method = "anova",  label = 'p.format')+
+    ggplot2::theme(strip.text.x = ggplot2::element_text(size = textsize))+
+    ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+    labs(title = title, y = "GSVA Score", x = "Class")+
+    theme(axis.text = element_text(size = 10), axis.title = element_text(size = 10, face = "bold"))
+}
+
+gsvaViolinplot(gsvaData = pdgfb_gsva_res1, textsize = 8,eset = cpm_eset, title = "PDGFRB sigs")
+```
+
+#### pEMT ~ pdgfr sigs
+
+```{r}
+hnsc_sign <- readRDS(file.path(PATH, "data/HNSC_CuratedGenesets.rds"))
+hnsc_sign_epi <-  hnsc_sign[names(hnsc_sign) %in% c("Cell_Cycle_PMID29198524", "pEMT_PMID29198524", "Epithelial_Differentiation_1_PMID29198524", "Epithelial_Differentiation_2_PMID29198524", "Stress_PMID29198524", "Hypoxia_PMID29198524")]
+names(hnsc_sign_epi)<- sapply(names(hnsc_sign_epi), function(x) str_split(x, pattern = "_PMID")[[1]], USE.NAMES=FALSE)[1,]
+
+hnsc_pemt <- hnsc_sign_epi['pEMT']
+
+gsva_pemt <- GSVA::gsva(expr = exprs(eSet_wo_infl), gset.idx.list = hnsc_pemt)
+gsvaViolinplot(gsvaData = gsva_pemt, textsize = 8, eset = cpm_eset, title = "pEMT sigs")
+```
+
+```{r}
+df_plasticity <- data.frame(t(gsva_pemt), t(pdgfb_gsva_res1), Class=eSet_wo_infl$Class)
+df_plasticity$Class <- factor(df_plasticity$Class, levels = c("Control", "HkNR", "Dysplasia", "OSCC"))
+```
+
+```{r}
+ggplot(df_plasticity,aes(pEMT, pdgfb)) +
+  stat_summary(fun.data=mean_cl_normal) + 
+  geom_smooth(method='lm', formula= y~x, ) +
+   labs(y = "PDGFRb GSVA scores", x = "pEMT GSVA scores")
+
+sp1 <- ggpubr::ggscatter(df_plasticity, x = "pEMT", y = "pdgfb",
+   add = "reg.line",  # Add regressin line
+   add.params = list(color = "blue", fill = "lightgray"), # Customize reg. line
+   conf.int = TRUE # Add confidence interval
+   )
+# Add correlation coefficient
+sp1 +  ggpubr::stat_cor(method = "pearson") +
+   labs(y = "PDGFRb GSVA scores", x = "pEMT GSVA scores")
+
+sp2 <- ggpubr::ggscatter(df_plasticity, x = "pEMT", y = "pdgfb", col="Class",
+   add = "reg.line",  # Add regressin line
+   add.params = list(color = "blue", fill = "lightgray"), # Customize reg. line
+   conf.int = TRUE # Add confidence interval
+   ) +
+  scale_color_npg(alpha = 0.8)+
+  scale_fill_npg(alpha = 0.7)+
+  ggplot2::geom_jitter(size=0.3) 
+# Add correlation coefficient
+sp2 +  
+  ggpubr::stat_cor(method = "pearson")  +
+   labs(y = "PDGFRb GSVA scores", x = "pEMT GSVA scores")
+
+
+ggplot(df_plasticity,aes(pEMT, pdgfb,  col=Class)) +
+  geom_point() +
+  scale_color_npg(alpha = 0.8)+
+  scale_fill_npg(alpha = 0.7)+
+  ggplot2::geom_jitter(size=0.3) +
+  ggpubr::stat_cor(method = "pearson")+
+  labs(y = "PDGFRb signature", x = "pEMT signature")
+
+ggplot(df_plasticity,aes(pEMT, pdgfb,  col=Class)) +
+  stat_summary(fun.data=mean_cl_normal) + 
+  geom_smooth(method='lm', formula= y~x) +
+  scale_color_npg(alpha = 0.8)+
+  scale_fill_npg(alpha = 0.7)+
+  ggplot2::geom_jitter(size=0.3) +
+  facet_wrap(~Class, ncol = 4) +
+  labs(y = "PDGFRb signature", x = "pEMT signature")
+
+```
+
+ 
+## hypeR {.tabset .tabset-fade .tabset-pills}
+hypeR is run on BIOCARTA, KEGG, REACTOME separately and the .Rmd files for each is separate files. The results are stored in `0.Supporting Material>results>PML_Pathways` in the GDrive folder.
+
+### Hallmark   
+
+with fdr = 0.1
+```{r}
+rctbl_mhyp_2 <- function(mhyp,
+                       show_emaps=FALSE,
+                       show_hmaps=FALSE,
+                       hyp_emap_args=list(top=25, val="fdr"),
+                       hyp_hmap_args=list(top=25, val="fdr"), 
+                       searchable = TRUE, resizable = TRUE) {
+
+    mhyp.df <- data.frame(signature=names(mhyp$data), 
+                          size=sapply(mhyp$data, function(hyp) hyp$info[["Signature Size"]]),
+                          enriched=sapply(mhyp$data, function(hyp) nrow(hyp$data)),
+                          gsets=sapply(mhyp$data, function(hyp) hyp$info[["Genesets"]]),
+                          bg=sapply(mhyp$data, function(hyp) hyp$info[["Background"]]))
+    
+    tbl <- reactable(
+        mhyp.df,
+        showPageSizeOptions = FALSE,
+        onClick = "expand",
+        resizable = TRUE,
+        rownames = FALSE,
+        searchable = TRUE,
+        filterable = TRUE,
+        defaultColDef = colDef(headerClass="rctbl-outer-header"),
+        columns = list(signature = colDef(name="Signature", minWidth=300),
+                       size = colDef(name="Signature Size"),
+                       enriched = colDef(name="Enriched Genesets"),
+                       gsets = colDef(name="Genesets"),
+                       bg = colDef(name="Background")),
+        
+        details = function(index) {
+                hyp <- mhyp$data[[index]]
+                rctbl_hyp(hyp, type="inner", show_emaps, show_hmaps, hyp_emap_args, hyp_hmap_args)
+            },
+        wrap = FALSE,
+        class = "rctbl-outer-tbl",
+        rowStyle = list(cursor="pointer")
+        )
+    
+    htmltools::div(class="rctbl-outer-obj", tbl) 
+}
+
+```
+
+```{r}
+HALLMARK <-  msigdb_gsets("Homo sapiens", "H", "")
+names(HALLMARK$genesets) <- names(HALLMARK$genesets) %>% strsplit( "HALLMARK_" ) %>% sapply( tail, 1 )
+
+lmultihyp1 <- hypeR(c(list_signs[[1]],list_signs[[2]], list_signs[[3]]) , HALLMARK, background = nrow(eSet_wo_infl))
+rctbl_mhyp(lmultihyp1)
+
+hyp_dots(lmultihyp1, fdr=0.1, merge = TRUE, top = 15, title = "All Pairwise")
+
+#hyp_to_excel(lmultihyp1, file_path = "~/Documents/Research/pml/pml_wo_infl/0906_hyper.xlsx")
+
+#for manuscript
+p1 <- hyp_dots(lmultihyp1, fdr=0.1, merge = TRUE, top = 15) +
+    labs(y="", x="") + theme_bw() +
+    theme_bw() +
+    theme(axis.title.y=element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank(), axis.text.x = element_blank(), axis.ticks.x = element_blank(), legend.position = "none")
+p1
+
+
+```
+
+
+### Reactome   
+
+#### Generic pathways
+
+```{r}
+REACTOME <- msigdb_gsets(species="Homo sapiens", category="C2", subcategory="CP:REACTOME", clean = TRUE)
+names(REACTOME$genesets) <- names(REACTOME$genesets) %>% strsplit( "REACTOME_" ) %>% sapply( tail, 1 )
+
+lmultihyp2 <- hypeR(c(list_signs[[1]],list_signs[[2]], list_signs[[3]]) , REACTOME, background = rownames(eSet_wo_infl))
+hyp_dots(lmultihyp2, fdr=0.1, merge = TRUE,  title = "Pairwise w/ background=rownames(eset)")
+rctbl_mhyp(lmultihyp2)
+
+lmultihyp3 <- hypeR(c(list_signs[[1]],list_signs[[2]], list_signs[[3]]) , REACTOME, background = nrow(eSet_wo_infl))
+hyp_dots(lmultihyp3, top = 15, fdr=0.1, merge = TRUE,  title = "Pairwise w/ background=nrow(eset)")
+rctbl_mhyp(lmultihyp3)
+
+   
+# write.xlsx(lmultihyp3$data$cancer.vs.control_up$as.data.frame(), file = "~/Documents/Research/pml/pml_wo_infl/08_30_host_hyper_reactome.xlsx", sheetName = "cancer.vs.control")
+# 
+# for (i in 1: length(names(lmultihyp3$data))) {
+#   gc()
+#   write.xlsx(lmultihyp3$[names(lmultihyp3$data[i])], file = "~/Documents/Research/pml/pml_wo_infl/08_30_host_hyper_reactome.xlsx", sheetName = names(lmultihyp3$data[i]), append = T)
+# }
+
+
+```
+
+#### Hierarchical
+
+Creating heirarchical genesets 
+```{r}
+genesets <- REACTOME$genesets
+length(genesets)
+```
+
+Clustering
+```{r}
+suppressPackageStartupMessages(library(hierarchicalSets))
+suppressPackageStartupMessages(library(qdapTools))
+
+mat <- genesets %>%
+    qdapTools::mtabulate() %>%
+    as.matrix() %>%
+    t() %>%
+    hierarchicalSets::format_sets()
+
+hierarchy <- hierarchicalSets::create_hierarchy(mat, intersectLimit=1)
+print(hierarchy)
+```
+
+```{r }
+plot(hierarchy, type='intersectStack', showHierarchy=TRUE, label=FALSE)
+plot(hierarchy, type='outlyingElements', quantiles=0.75, alpha=0.5, label=FALSE)
+```
+
+
+
+```{r }
+suppressPackageStartupMessages(library(dendextend))
+suppressPackageStartupMessages(library(stringi))
+```
+
+```{r}
+find.trees <- function(d) {
+    subtrees <- dendextend::partition_leaves(d)
+    leaves <- subtrees[[1]]
+    find.paths <- function(leaf) {
+        which(sapply(subtrees, function(x) leaf %in% x))
+    }
+    paths <- lapply(leaves, find.paths)
+    edges <- data.frame(from=c(), to=c())
+    if (length(d) > 1) {
+        for (path in paths) {
+            for (i in seq(1, length(path)-1)) {
+                edges <- rbind(edges, data.frame(from=path[i], to=path[i+1]))
+            }
+        }
+        edges <- dplyr::distinct(edges)
+        edges$from <- paste0("N", edges$from)
+        edges$to <- paste0("N", edges$to)
+    }
+    names(subtrees) <- paste0("N", seq(1:length(subtrees)))
+    nodes <- data.frame(id=names(subtrees))
+    rownames(nodes) <- nodes$id
+    nodes$label <- ""
+    leaves <- sapply(subtrees, function(x) length(x) == 1)
+    nodes$label[leaves] <- sapply(subtrees[leaves], function(x) x[[1]])
+    nodes$id <- NULL
+    
+    # Internal nodes will not have labels, so we can generate unique hash identifiers
+    ids <- stringi::stri_rand_strings(nrow(nodes), 32)
+    names(ids) <- rownames(nodes)
+    rownames(nodes) <- ids[rownames(nodes)]
+    edges$from <- ids[edges$from]
+    edges$to <- ids[edges$to]
+    
+    return(list("edges"=edges, "nodes"=nodes))
+}
+```
+
+```{r}
+trees <- lapply(hierarchy$clusters, find.trees)
+length(trees)
+```
+
+Nodes
+```{r}
+nodes.all <- lapply(trees, function(x) x$nodes)
+nodes <- do.call(rbind, nodes.all)
+head(nodes)
+```
+
+Edges
+```{r }
+edges.all <- lapply(trees, function(x) x$edges)
+edges <- data.frame(do.call(rbind, edges.all))
+head(edges)
+```
+
+Create the relational genesets object
+```{r}
+#genesets <- hyperdb_rgsets("REACTOME", version="70.0")
+rgsets_obj <- rgsets$new(genesets, nodes, edges, name="REACTOME", version=msigdb_version())
+rgsets_obj
+
+hyp1 <- hypeR(c(list_signs[[1]], list_signs[[2]], list_signs[[3]]), rgsets_obj, background = rownames(exprs(eSet_wo_infl)))
+hyp_dots(hyp1, fdr=0.1, top=20, merge = TRUE, title = "Pairwise w/ background=rownames(eset)", sizes = TRUE)
+rctbl_mhyp(hyp1)
+
+#this was used in the manuscript!!!
+hyp2 <- hypeR(c(list_signs[[1]], list_signs[[2]], list_signs[[3]]), rgsets_obj, background = nrow(exprs(eSet_wo_infl)))
+#hyp_to_excel(hyp2, file_path = "~/Documents/Research/pml/pml_wo_infl/0906_reactome.xlsx")
+rctbl_mhyp(hyp2)
+
+hyp_dots(hyp2, fdr=0.1, top=15, merge = TRUE, title = "Pairwise w/ background=nrow(eset)", sizes = TRUE)
+
+hyp_hmap(hyp2, fdr=0.1, top=15)
+
+```
+
+```{r}
+#do hierarchical clust
+
+.dots_multi_plot <- function(multihyp_data,
+                             top=20,
+                             abrv=50,
+                             sizes=TRUE,
+                             pval_cutoff=1, 
+                             fdr_cutoff=1,
+                             val=c("fdr", "pval"),
+                             title="") {
+    
+    # Default arguments
+    val <- match.arg(val)
+    
+    # Count significant genesets across signatures
+    multihyp_dfs <- lapply(multihyp_data, function(hyp_obj) {
+        hyp_obj$data %>%
+        dplyr::filter(pval <= pval_cutoff) %>%
+        dplyr::filter(fdr <= fdr_cutoff) %>%
+        dplyr::select(label)
+    })
+    
+    # Take top genesets
+    labels <- names(sort(table(unlist(multihyp_dfs)), decreasing=TRUE))
+    if (!is.null(top)) labels <- head(labels, top)
+    
+    # Handle empty dataframes
+    if (length(labels) == 0) return(ggempty())
+    
+    # Create a multihyp dataframe
+    dfs <- lapply(multihyp_data, function(hyp_obj) {
+        hyp_df <- hyp_obj$data
+        hyp_df[hyp_df$label %in% labels, c("label", val), drop=FALSE]
+    })
+    
+    df <- suppressWarnings(Reduce(function(x, y) merge(x, y, by="label", all=TRUE), dfs))
+    colnames(df) <- c("label", names(dfs))
+    rownames(df) <- df$label
+    df <- df[rev(labels), names(dfs)]
+    
+    # Abbreviate labels
+    label.abrv <- substr(rownames(df), 1, abrv)
+    if (any(duplicated(label.abrv))) {
+        stop("Non-unique labels after abbreviating")
+    } else {
+        rownames(df) <- factor(label.abrv, levels=label.abrv)   
+    }
+    
+    if (val == "pval") {
+        cutoff <- pval_cutoff
+        color.label <- "P-Value"
+    }
+    if (val == "fdr") {
+        cutoff <- fdr_cutoff
+        color.label <- "FDR"
+    }
+    
+    df.melted <- reshape2::melt(as.matrix(df))
+    colnames(df.melted) <- c("label", "signature", "significance")
+    df.melted$size <- if(sizes) df.melted$significance else 1
+    return(df.melted)
+}
+
+```
+
+arrange the dotplot according to clustered groups
+
+```{r}
+.reverselog_trans <- function(base=exp(1)) {
+    trans <- function(x) -log(x, base)
+    inv <- function(x) base^(-x)
+    scales::trans_new(paste0("reverselog-", format(base)), trans, inv, 
+              scales::log_breaks(base=base), 
+              domain=c(1e-100, Inf))
+}
+
+df <- .dots_multi_plot(hyp2$data, top = 15, abrv = 75, sizes = TRUE, fdr_cutoff = 0.1, pval_cutoff = 0.05, val = "fdr", title)
+df <- df[df$significance <= 0.1, ]
+#rownames(df) <- NULL
+df %>%
+    ggplot(aes(x=signature, y=(factor(label)), color=significance, size=size)) +
+    geom_point() +
+    scale_color_continuous(low="#114357", high="#E53935", trans=.reverselog_trans(10)) +
+    scale_size_continuous(trans=.reverselog_trans(10), guide="none") +
+    theme_bw() + 
+    ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+label_ordered <- c("Extracellular Matrix Organization", "Activation Of Matrix Metalloproteinases", "Degradation Of The Extracellular Matrix", "Cytokine Signaling In Immune System", "Interleukin 4 And Interleukin 13 Signaling", "Anti Inflammatory Response Favouring Leishmania Parasite Infection", "Fcgr Activation",  "Fcgr3a Mediated Il10 Synthesis",  "Immunoregulatory Interactions Between A Lymphoid And A Non Lymphoid Cell", "Formation Of The Cornified Envelope", "Collagen Formation", "Collagen Degradation", "Biological Oxidations", "Fatty Acids", "Cytochrome P450 Arranged By Substrate Type")
+df <- df[order(match(df$label, label_ordered)),]
+
+df$label <- factor(df$label, levels = rev(label_ordered))
+
+df %>%
+    ggplot(aes(x=signature, y=(factor(label)), color=significance, size=size)) +
+    geom_point() +
+    scale_color_continuous(low="#114357", high="#E53935", trans=.reverselog_trans(10)) +
+    scale_size_continuous(trans=.reverselog_trans(10), guide="none") +  theme_bw() 
+# +theme(axis.title.y=element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank(), axis.text.x = element_blank(), axis.ticks.x = element_blank(), legend.position = "none")
+
+#for manuscript
+p1 <- df %>%
+    ggplot(aes(x=signature, y=(factor(label)), color=significance, size=size)) +
+    geom_point() +
+    scale_color_continuous(low="#114357", high="#E53935", trans=.reverselog_trans(10)) +
+    scale_size_continuous(trans=.reverselog_trans(10), guide="none") +  theme_bw() +
+    theme(axis.title.y=element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank(), axis.text.x = element_blank(), axis.ticks.x = element_blank(), legend.position = "none")
+
+p1
+
+
+```
+
+
+### KEGG   
+
+with fdr = 0.1
+
+```{r}
+KEGG <- msigdb_gsets(species="Homo sapiens", category = 'C2', subcategory = 'CP:KEGG')
+#enrichr_gsets("KEGG_2019_Human")
+lmultihyp1 <- hypeR(list_signs[[1]], KEGG)
+hyp_dots(lmultihyp1, fdr=0.1, merge = TRUE, title = "PML with Controls")
+rctbl_mhyp(lmultihyp1)
+
+lmultihyp2 <- hypeR(list_signs[[2]], KEGG)
+hyp_dots(lmultihyp2, fdr=0.1, merge = TRUE, title = "PML with Cancer")
+rctbl_mhyp(lmultihyp2)
+
+lmultihyp3 <- hypeR(list_signs[[3]], KEGG)
+hyp_dots(lmultihyp3, fdr=0.1, merge = TRUE, title = "Pairwise PML")
+rctbl_mhyp(lmultihyp3)
+
+```
+
+### GO 
+
+with fdr = 0.1
+
+```{r}
+GO <- msigdb_gsets("Homo sapiens", "C5", subcategory = 'CC')
+names(GO$genesets) <- names(GO$genesets) %>% strsplit( "GOMF_" ) %>% sapply( tail, 1 )
+length(unique(names(GO$genesets)))
+lmultihyp1 <- hypeR(list_signs[[1]], GO)
+hyp_dots(lmultihyp1, fdr=0.1, merge = TRUE, title = "PML with Controls")
+rctbl_mhyp(lmultihyp1)
+
+lmultihyp2 <- hypeR(list_signs[[2]], GO)
+hyp_dots(lmultihyp2, fdr=0.1, merge = TRUE, title = "PML with Cancer")
+rctbl_mhyp(lmultihyp2)
+
+lmultihyp3 <- hypeR(list_signs[[3]], GO)
+hyp_dots(lmultihyp3, fdr=0.1, merge = TRUE, title = "Pairwise PML")
+rctbl_mhyp(lmultihyp3)
+
+
+lmultihyp1 <- hypeR(c(list_signs[[1]],list_signs[[2]], list_signs[[3]]) , GO, fdr = 0.1)
+hyp_dots(lmultihyp1, fdr=0.1, merge = TRUE, top = 50, title = "All Pairwise", abrv = 50) 
+rctbl_mhyp(lmultihyp1)
+```
+
+
+
+

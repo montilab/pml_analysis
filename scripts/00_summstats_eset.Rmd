@@ -1,0 +1,156 @@
+---
+title: "PML Summary Stats and eSet Creation"
+author: "M. Muzamil Khan"
+date: "08/09/2021"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "/Users/mmkhan/Documents/Research/pml/pml_wo_infl/pml_github")
+```
+
+
+```{r}
+#library(hashmap)
+library(ggplot2)
+library(stringr)
+library(DT)
+library(plyr)
+library(dplyr)
+library(biomaRt)
+library(Biobase)
+library(reshape2)
+library(formattable)
+library(VennDiagram)
+library(hypeR)
+library(xlsx)
+PATH <- getwd()
+```
+
+## Overview {.tabset}
+
+Data shown is the summary of the number of reads of 8 sequencing runs of the Kukuruzinska project consisting 95 Sample_IDs of premalignant lesions (both cytobrushes and . The Sample_IDs are sequenced for total transcriptomics with polyA tail reads consisiting of host as well as microbial RNA that will be mapped to their respective genome libraries. The Sample_IDs were collected through biopsies and cytobrush sampling and this is referred to as ‘Type’ in the analysis. The ‘Class’ of the cancer type consists of 4 types: Inflammatory, Dysplasia, Oral Keratosis of Unknown Significance(KUS) now called hyperkeratosis; not reactive (HkNR), cancer(very early stage of malignant lesions) that might progress into a malignant tumor.
+
+The paired-end reads was aligned and mapped using Rsubread package with featureCounts as a quantifier. The reads were aligned to the hg38 human genome. The sequencing kit used was 'Kapa Biosystems RNA HyperPrep Library Kit with RiboErase'; a stranded library using dUTPs to generate cDNA with the 2nd strand(reverse strand) hence the 'reverse stranded' option in featureCounts (`strandSpecific=2`) must be used. 
+
+Gene annotation is performed while doing the featureCount mapping using the human hg38 ensembl ids. The script used in performing the pre-processing is stored in scc in the location `$MLAB/projects/oralcancer/premalignant/evan_rsubread_test/ProcessRnaSeqFeatureCountsEnsemble.R` and the corresponding logfile is `/restricted/projectnb/montilab-p/projects/oralcancer/premalignant/evan_rsubread_test/monti_rnaseq_05-12.qlog`
+
+**Few considerations: Cytobrush samples were removed due to their poor mapping quality and Inflammatory group was removed as they were not relevant to this study.**
+
+```{r}
+featureCounts_metrics <- read.table(file.path(PATH, "data/featureCounts_metrics.txt"))
+annotData <- data.frame(read.csv(file.path(PATH, "data/2021_08_09_pml_annotations_collated.csv"), header = TRUE))
+assaydata <- read.table(file.path(PATH, "data/features_combined.txt"))
+
+annotData$Sample_ID <- gsub(pattern = "\\-", replacement = "\\_", annotData$Sample_ID)
+rownames(annotData) <- gsub(pattern = "\\-", replacement = "\\_", annotData$Sample_ID)
+colnames(assaydata) <- gsub(pattern = "\\.", replacement = "\\_", colnames(assaydata))
+annotData$Class <- factor(annotData$Class, levels = c("Control", "Inflammatory", "HkNR", "Dysplasia", "Cancer"))
+fc_trans <- data.frame(t(featureCounts_metrics))
+rownames(fc_trans) <- gsub(pattern = "\\.", replacement = "\\_", rownames(fc_trans))
+fc_trans <- data.frame(fc_trans, annotData[match(rownames(fc_trans), rownames(annotData)),])
+fc_trans$mapping_rate <- (fc_trans$Mapped_fragments/fc_trans$Total_fragments)*100
+fc_trans$rawcounts <- colSums(assaydata)[match(colnames(assaydata), rownames(fc_trans))]
+```
+
+## Patient Summary {.tabset .tabset-fade .tabset-pills}
+```{r}
+df <- data.frame(row.names = unique(annotData$Class))
+class_groups <- data.frame(table(annotData$Class))
+df$all <- class_groups$Freq
+
+type_groups <- data.frame(table(annotData$Class[which(annotData$Type=='Cytobrush')]))
+df$type_cytobrush <- c(type_groups$Freq[1],0,0,type_groups$Freq[2], type_groups$Freq[3])
+
+df$unique <- df$all - df$type
+
+datatable(df)
+
+type <- data.frame(table(annotData$Type))
+names(type) <- c("Type", "Freq")
+
+datatable(type)
+```
+
+
+## Reads Summary {.tabset .tabset-fade .tabset-pills}
+```{r}
+
+ggplot(data = fc_trans, aes(x = reorder(Sample_ID, -Total_fragments), y = Total_fragments, fill = Class)) + 
+  geom_bar(stat = "identity", width = 0.75,) + 
+  labs(title = "Sample_ID by paired-end reads", y = "Reads", x = "Sample_ID")+ coord_flip() +
+  theme(axis.text = element_text(size = 4), axis.title = element_text(size = 10, face = "bold"))
+
+ggplot(fc_trans,aes(reorder(Class, Total_fragments, median, order = TRUE), Total_fragments, fill = Class)) +
+  geom_boxplot(aes(fill=Class)) +
+  labs(title="Class by Reads",y="Reads",x="Class")
+
+ggplot(fc_trans,aes(reorder(Type, Total_fragments, median, order = TRUE), Total_fragments, fill = Type)) +
+  geom_boxplot(aes(fill=Type)) +
+  labs(title="Type by Reads",y="Reads",x="Type")
+
+
+ggplot(fc_trans,aes(reorder(Sample_ID, mapping_rate, median, order = TRUE), mapping_rate, color = Class)) +
+  geom_boxplot(width=1)+
+  labs(title="Class by mapping rate",y="mapping rate",x="Class")+
+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(fc_trans,aes(reorder(Sample_ID, mapping_rate, median, order = TRUE), mapping_rate, color = Type)) +
+  geom_boxplot(width=1)+
+  labs(title="Type by mapping rate",y="mapping rate",x="Type")+
+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(fc_trans,aes(reorder(Class, mapping_rate, median, order = TRUE), mapping_rate, fill = Class)) +
+  geom_boxplot(aes(fill=Class))+
+  labs(title="Class by mapping rate",y="mapping rate",x="Class")+
+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(fc_trans,aes(reorder(Type, mapping_rate, median, order = TRUE), mapping_rate, fill = Type)) +
+  geom_boxplot(aes(fill=Type))+
+  labs(title="Type by mapping rate",y="mapping rate",x="Type")+
+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(fc_trans,aes(reorder(Sample_ID, rawcounts, median, order = TRUE), rawcounts, color = Class)) +
+  geom_boxplot(width=1)+
+  labs(title="Class by rawcounts",y="raw counts",x="Class")+
+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(fc_trans,aes(reorder(Sample_ID, rawcounts, median, order = TRUE), rawcounts, color = Type)) +
+  geom_boxplot(width=1)+
+  labs(title="Type by rawcounts",y="raw counts",x="Type")+
+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(fc_trans,aes(reorder(Class, rawcounts, median, order = TRUE), rawcounts, fill = Class)) +
+  geom_boxplot(aes(fill=Class))+
+  labs(title="Class by rawcounts",y="rawcounts",x="Type")+
+ theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(fc_trans,aes(reorder(Type, rawcounts, median, order = TRUE), rawcounts, fill = Type)) +
+  geom_boxplot(aes(fill=Type))+
+  labs(title="Type by rawcounts",y="rawcounts",x="Type")+
+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+
+## ExpressionSet creation {.tabset .tabset-fade .tabset-pills}
+
+```{r eval=F}
+eSet <- Biobase::ExpressionSet(assayData = as.matrix(assaydata),
+                              phenoData = AnnotatedDataFrame(fc_trans[match(colnames(assaydata),rownames(fc_trans)),]))
+
+saveRDS(eSet, file.path(PATH, "pml/eSet_2021_08_12.RDS"))
+```

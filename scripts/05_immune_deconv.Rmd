@@ -1,0 +1,367 @@
+---
+title: "PML Immune deconv (w/o Infl)"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+## Recap
+The summary statistics and respective plots along with eSet creation is in `00_summstats_eset.{Rmd, html}`, imputation with random forest is in `01_pml_imp_summary.{Rmd, html}`,  DimRed analysis is in `02_dimred_hvg.{Rmd, html}`, The differential expression analysis using DESeq2 along with significant marker info. is in `03_diffanalysis.{Rmd, html}` and the GSVA analysis from signatures coming from relevant datasets along with hypeR GSEA from the signatures is in `04_hyper_gsva_sigs.{Rmd, html}`. This file contains the immune deconvolution results from CIBERSORT with boxplots viz for grouped cell types(Innate and Adaptive) and their breakdown of sub cell-types as well as CD8/CD4 ratios.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "/Users/mmkhan/Documents/Research/pml/pml_wo_infl/pml_github")
+```
+
+```{r warning=FALSE, message=F}
+library(ggplot2)
+library(stringr)
+library(DT)
+library(plyr)
+library(dplyr)
+library(biomaRt)
+library(Biobase)
+library(reshape2)
+library(formattable)
+library(VennDiagram)
+library(hypeR)
+library(xlsx)
+library(DESeq2)
+library(gridExtra)
+library(ggsci)
+PATH <- getwd()
+```
+
+
+# Read ExpressionSet object {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+eset <- readRDS(file.path(PATH, "data/2021_08_20_eset_imputed.RDS"))
+eSet_wo_infl <- eset[, which(pData(eset)$Class != 'Inflammatory')]
+table(eSet_wo_infl$Class)
+
+eSet_wo_infl$Class <- recode(eSet_wo_infl$Class, "Cancer"="OSCC")
+eSet_wo_infl$Class <- factor(eSet_wo_infl$Class, levels = c("Control", "HkNR", "Dysplasia", "OSCC"))
+
+cpm_eset <- eSet_wo_infl
+exprs(cpm_eset) <- apply(exprs(cpm_eset), 2, function(x) {x/(sum(x)/1000000)})
+print(dim(cpm_eset))
+
+cpm_eset$Class <- recode(cpm_eset$Class, "Control"="1-Control", "HkNR"="2-HkNR", "Dysplasia"="3-Dysplasia", "OSCC"="4-OSCC")
+cpm_eset$Class <- factor(cpm_eset$Class, levels = c("1-Control", "2-HkNR", "3-Dysplasia", "4-OSCC"))
+
+```
+
+# Immune deconvolution {.tabset .tabset-fade .tabset-pills}
+
+Using TPM counts(as recommended by immunedeconv & TIMER 2.0) immune deconvolution was performed.
+The resulting estimation matrix consists of enrichment/abundant scores from various methods such as xCell, CIBERSORT etc., 
+
+The collective scores such as immune, stromal, microenvironment, cytotoxicity scores comes from xCell and MCPCounter.
+
+```{r eval=FALSE}
+#setwd("~/Downloads/tpm/")
+files = list.files(path = "~/Documents/Research/pml/pml_wo_infl/pml_tpm_wo_infl/", pattern=".tpm", full.names = TRUE)
+tpm=read.table(file = files[1],row.names=1)
+
+for (i in files[-1]){
+  tmp=read.table(i,row.names=1)
+  tpm=data.frame(tpm,tmp)
+}
+
+files1 = list.files(path = "~/Documents/Research/pml/pml_wo_infl/pml_tpm_wo_infl/", pattern=".tpm", full.names = FALSE)
+colnames(tpm)=substr(files1,1,nchar(files1)-4)
+write.table(tpm,file="~/Documents/Research/pml/pml_wo_infl/pml_tpm_wo_infl/tpm_combined_wo_infl.txt",quote=F,sep='\t')
+```
+
+The above .txt file consisting of TPM counts were inputted to [TIMER2.0 website](http://timer.cistrome.org)
+
+```{r}
+#using tpm counts 
+est <- read.csv(file.path(PATH, "results/estimation_matrix_wo_infl.csv"))
+est1 <- est[grepl(est$cell_type, pattern = "_CIBERSORT-ABS"),]
+est1$cell_type <- unlist(strsplit(est1$cell_type, split = "_CIBERSORT-ABS", fixed = TRUE))
+est1 <- est1[!est1$cell_type %in% c( "immune score", "stroma score", "microenvironment score"),]
+
+#filter only cell-types
+est_mat <- as.matrix(est1[, colnames(est1)!='cell_type'])
+rownames(est_mat) <- est1$cell_type
+colnames(est_mat) <- gsub(colnames(est_mat), pattern = "\\.", replacement = "_")
+
+#score specific data
+est2 <- est[est$cell_type %in% c("immune score_XCELL", "stroma score_XCELL", "microenvironment score_XCELL", "cytotoxicity score_MCPCOUNTER"),]
+est2$cell_type <- recode(est2$cell_type, "immune score_XCELL"="immune score", "microenvironment score_XCELL"="microenvironment score", "stroma score_XCELL"="stroma score", "cytotoxicity score_MCPCOUNTER"="cytotoxicity score")
+
+est_mat2 <- as.matrix(est2[, colnames(est2)!='cell_type'])
+rownames(est_mat2) <- est2$cell_type
+colnames(est_mat2) <- gsub(colnames(est_mat2), pattern = "\\.", replacement = "_")
+```
+
+## ComplexHeatmap {.tabset .tabset-fade .tabset-pills}
+
+```{r fig.width=8, fig.height=10}
+library(ComplexHeatmap)
+heatdata <- est_mat
+heatdata <- t((scale(t(heatdata))))
+heatmapkey <- paste("Scaled", "scores", sep = "\n")
+condition <- c('Class')
+column_ha = HeatmapAnnotation(`Cytotoxic Score` = anno_barplot(est_mat2['cytotoxicity score', ], baseline = median(est_mat2['cytotoxicity score', ])),
+                              `Immune Score` = anno_barplot(est_mat2['immune score', ], baseline = median(est_mat2['immune score', ])),
+                              `Stroma Score` = anno_barplot(est_mat2['stroma score', ], baseline = median(est_mat2['stroma score', ])),
+                              `Microevironment Score` = anno_barplot(est_mat2['microenvironment score', ], baseline = median(est_mat2['stroma score', ])), 
+                              Class = factor(cpm_eset$Class, levels = c("1-Control", "2-HkNR", "3-Dysplasia", "4-OSCC")), Progression_status= factor(cpm_eset$Progression_status, levels = c("Stable", "Progressed-Dys", "Progressed-SCC")),
+                              col = list(Class=c("1-Control"="#2b83ba",  "2-HkNR"="#ffffbf", "3-Dysplasia"="#fdae61", "4-OSCC"="#d7191c"), Progression_status=c("Stable"="white", "Progressed-SCC"="red", "Progressed-Dys"="pink", "NA"="grey")))
+column_split <- factor(cpm_eset$Class, levels = c("1-Control",  "2-HkNR", "3-Dysplasia", "4-OSCC"))
+row_split <- list("Myeloid dendritic cell activated",  "Myeloid dendritic cell", "Eosinophil", "Mast cell", "Monocyte",  "Macrophage",  "Macrophage M1", "Macrophage M2", "NK cell", rownames(heatdata)[!rownames(heatdata) %in% c( "Myeloid dendritic cell activated",  "Eosinophil", "Mast cell", "Monocyte",  "Macrophage",  "Macrophage M1", "Macrophage M2", "Myeloid dendritic cell", "NK cell",  "Common lymphoid progenitor", "Common myeloid progenitor")])
+ha = rowAnnotation(foo = anno_empty(border = FALSE, width = max_text_width(unlist(row_split)) + unit(4, "mm")))
+col_fun = viridis::inferno(begin = 0, end = 1, n = 3)
+
+ComplexHeatmap::Heatmap(heatdata, top_annotation = column_ha, column_split = column_split,   name = heatmapkey, cluster_rows = FALSE, show_row_names = TRUE, cluster_columns = FALSE)
+
+```
+
+## Boxplots {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+#function to plot imm cell types
+ggplot_imm <- function(df, type){
+  # wrap_by <- function(...) {
+  # facet_wrap(vars(...), labeller = label_both)
+  # }
+  # var <- vars(type)
+  ggplot2::ggplot(df, ggplot2::aes(x = Class, y = value,  fill=Class)) +  
+  geom_boxplot(outlier.size=0.1) +
+  scale_fill_npg(alpha = 0.7) +
+  scale_color_npg(alpha = 0.7) +
+  ggplot2::geom_jitter(size=0.15) + 
+  ggplot2::facet_wrap(as.formula(paste("~",type)), scale = "free_y",  ncol = ceiling(sqrt(ncol(t(est_mat)))), strip.position =  "left") + 
+  theme_bw() +
+  ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1), strip.text.y  = element_text(size = 15)) + 
+  ggpubr::stat_compare_means(aes(group=Class), method = "anova",  label = 'p.format') +
+  theme(legend.position = "none")
+}
+```
+
+
+
+```{r}
+est_mat_mod <- est_mat[!rownames(est_mat) %in% c("Myeloid dendritic cell resting", "Myeloid dendritic cell activated", "Eosinophil"),]
+df_est <- data.frame(t(as.matrix(round(est_mat_mod, digits = 3))))
+df_est$Class <- cpm_eset$Class
+condition <- 'Class'
+cond <- apply(pData(cpm_eset)[, "Class", drop = FALSE], 1, paste, collapse = "_")
+df_est[, paste(condition, collapse = "_")] <- cond
+
+df_est_melted <- reshape2::melt(df_est, 
+                              id.vars = "Class",
+                              variable.name = "cell_types")
+
+df_est_melted$main_cell_types <- ifelse(df_est_melted$cell_types %in% c("NK.cell.resting", "NK.cell.activated", "Monocyte", "Macrophage.M0", "Macrophage.M1", "Macrophage.M2", "Mast.cell.activated", "Mast.cell.resting", "Neutrophil"), "Innate", "Adaptive")
+df_est_melted$grouped_cell_types <- df_est_melted$cell_types
+df_est_melted$grouped_cell_types <- ifelse(df_est_melted$cell_types %in% c("NK.cell.resting", "NK.cell.activated"), "NK cells",  df_est_melted$grouped_cell_types)
+
+df_est_melted$grouped_cell_types <- ifelse(df_est_melted$cell_types %in% c("Monocyte", "Macrophage.M0", "Macrophage.M1", "Macrophage.M2"), "Macrophages", df_est_melted$grouped_cell_types)
+
+df_est_melted$grouped_cell_types <- ifelse(df_est_melted$cell_types %in% c("Mast.cell.activated", "Mast.cell.resting"), "Mast cells", df_est_melted$grouped_cell_types)
+
+df_est_melted$grouped_cell_types <- ifelse(df_est_melted$cell_types %in% c("B.cell.naive", "B.cell.memory", "B.cell.plasma" ), "B cells", df_est_melted$grouped_cell_types)
+
+df_est_melted$grouped_cell_types <- ifelse(df_est_melted$cell_types %in% c("T.cell.CD8.", "T.cell.CD4..naive", "T.cell.CD4..memory.resting",   "T.cell.CD4..memory.activated", "T.cell.follicular.helper", "T.cell.regulatory..Tregs.", "T.cell.gamma.delta"), "T cells", df_est_melted$grouped_cell_types)
+                      
+df_est_melted$grouped_cell_types <- ifelse(df_est_melted$cell_types %in% c("Neutrophil"), "Neutrophils", df_est_melted$grouped_cell_types)
+
+df_est_melted$Class <- factor(df_est_melted$Class, levels=c("1-Control",  "2-HkNR", "3-Dysplasia", "4-OSCC"))
+df_est_melted$main_cell_types <- factor(df_est_melted$main_cell_types, levels = c("Innate", "Adaptive"))
+
+```
+
+
+### Grouped cell-types {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+g1 <- ggplot_imm(df = df_est_melted, type="main_cell_types")
+g1 
+
+g2 <- ggplot_imm(df =  df_est_melted %>% dplyr::filter(main_cell_types == 'Innate'), type="main_cell_types")
+g2
+
+g3 <- ggplot_imm(df =  df_est_melted %>% dplyr::filter(main_cell_types == 'Adaptive'), type="main_cell_types")
+g3
+
+
+```
+
+### Immune breakdown {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+#grouped cell types
+g4 <- ggplot_imm(df =  df_est_melted %>% dplyr::filter(grouped_cell_types %in% c("NK cells", "Macrophages", "Mast cells", "Neutrophils")), type="grouped_cell_types")
+g4
+
+
+g5 <- ggplot_imm(df = df_est_melted %>% dplyr::filter(!grouped_cell_types %in% c("NK cells", "Macrophages", "Mast cells", "Neutrophils")), type="grouped_cell_types")
+g5
+
+
+g6 <- ggplot_imm(df = df_est_melted %>% dplyr::filter(grouped_cell_types %in% c("NK cells", "Macrophages", "Mast cells", "Neutrophils")), type="cell_types")
+g6
+
+
+
+g7 <- ggplot_imm(df_est_melted %>% dplyr::filter(!grouped_cell_types %in% c("NK cells", "Macrophages", "Mast cells", "Neutrophils")), type="cell_types")
+g7
+
+#collective scores
+df_est <- data.frame(t(as.matrix(round(est_mat2, digits = 3))))
+df_est$Class <- cpm_eset$Class
+condition <- 'Class'
+cond <- apply(pData(cpm_eset)[, "Class",drop = FALSE], 1, paste, collapse = "_")
+df_est[, paste(condition, collapse = "_")] <- cond
+df_est_melted2 <- reshape2::melt(df_est, 
+                              id.vars = "Class",
+                              variable.name = "scores")
+df_est_melted2$Class <- factor(df_est_melted2$Class, levels=c("1-Control",  "2-HkNR", "3-Dysplasia", "4-OSCC"))
+g8 <- ggplot2::ggplot(df_est_melted2, ggplot2::aes(x = Class, y = value, fill = Class)) +  
+  geom_boxplot(outlier.size =0.1) +
+  scale_fill_jama(alpha = 0.7)+
+  scale_color_jama(alpha = 0.7)+
+  ggplot2::geom_jitter(size=0.15) + 
+  ggpubr::stat_compare_means(aes(group=Class), method = "anova",  label = 'p.format')+
+  ggplot2::facet_wrap(~scores, scale = "free_y",  ncol = 2, strip.position =  "left") +  
+  ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1), strip.text.y  = element_text(size = 12)) + 
+  theme(legend.position = "none")
+g8
+
+```
+
+
+## CD8/Tregs ratio and others {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+df <- data.frame(t(est_mat))
+cd8_df <- df %>% dplyr::select(c(T.cell.CD8., T.cell.regulatory..Tregs.,  T.cell.CD4..naive, T.cell.CD4..memory.resting, T.cell.CD4..memory.activated))
+cd8_df$Class <- factor(cpm_eset$Class, levels=c("1-Control",  "2-HkNR", "3-Dysplasia", "4-OSCC"))
+cd8_df <- dplyr::rename(cd8_df, "CD8_Tcell"="T.cell.CD8.", "Tregs"="T.cell.regulatory..Tregs.", "CD4_naive"="T.cell.CD4..naive", "CD4_mem_rest"= "T.cell.CD4..memory.resting", "Tcell_mem_act"="T.cell.CD4..memory.activated")
+cd8_df$ave_cd4 <- (cd8_df$CD4_naive + cd8_df$Tcell_mem_act + cd8_df$CD4_mem_rest)/3
+
+# lm_and_anova <- function(data, x, y, cov) {
+#   data <- data
+#   print(paste("lm(", y, "~", x, "+", cov,")", sep = ""))
+#   formula1 <- as.formula(paste(paste(y), "~", "0+", paste(x), "+", paste(cov)))
+#   lm_res <-  do.call("lm", list(formula1, quote(data)))
+#   print("lm summary...")
+#   print(summary(lm_res))
+#   aov_res <- aov(data[,paste(y)] ~  0 + data[,paste(x)] + data[,paste(cov)])
+#   print("aov summary...")
+#   print(paste("lm(", y, "~", x, "+", cov,")", sep = ""))
+#   print(summary(aov_res))
+#  TukeyHSD(aov_res, cov)
+# }
+# 
+# cd8_treg_res <- lm_and_anova(cd8_df, x = "Tregs", y = "CD8_Tcell", cov = "Class")
+# cd8_cd4_res <- lm_and_anova(cd8_df, x = "CD4_naive", y = "CD8_Tcell", cov = "Class")
+# cd8_cd4_mem_act <- lm_and_anova(cd8_df, x = "Tcell_mem_act", y = "CD8_Tcell", cov = "Class")
+# cd8_cd4_mem_rest <- lm_and_anova(cd8_df, x = "CD4_mem_rest", y = "CD8_Tcell", cov = "Class")
+# cd8_cd4_ave <- lm_and_anova(cd8_df, x = "ave_cd4", y = "CD8_Tcell", cov = "Class")
+
+```
+
+### dwplot for CD8/CD4 {.tabset .tabset-fade .tabset-pills}
+
+```{r fig.width=10, fig.height=10}
+library(dotwhisker)
+library(ggpubr)
+theme_set(theme_pubr())
+
+cd8_tregs <- lm(CD8_Tcell ~ 0 + Tregs + Class, data = cd8_df)
+summary(cd8_tregs)
+
+cd8_cd4 <- lm(CD8_Tcell ~ 0 + CD4_naive + Class, data = cd8_df)
+summary(cd8_cd4)
+
+cd8_cd4_mem_act <- lm(CD8_Tcell ~ 0 + Tcell_mem_act + Class, data = cd8_df)
+summary(cd8_cd4_mem_act)
+
+cd8_cd4_mem_res <- lm(CD8_Tcell ~ 0 + CD4_mem_rest + Class, data = cd8_df)
+summary(cd8_cd4_mem_res)
+
+cd8_cd4_ave <- lm(CD8_Tcell ~ 0 + ave_cd4 + Class, data = cd8_df)
+summary(cd8_cd4_ave)
+
+cd8_tregs_dw <- broom::tidy(cd8_tregs) %>% mutate(model = "cd8_tregs")
+cd8_tregs_dw <- cd8_tregs_dw[!cd8_tregs_dw$term %in% c("Tregs"),]
+
+cd8_cd4_dw <- broom::tidy(cd8_cd4) %>% mutate(model = "cd8_cd4")
+cd8_cd4_dw <- cd8_cd4_dw[!cd8_cd4_dw$term %in% c("CD4_naive"),]
+
+cd8_cd4_mem_act_dw <- broom::tidy(cd8_cd4_mem_act) %>% mutate(model = "cd8_cd4_mem_act")
+cd8_cd4_mem_act_dw <- cd8_cd4_mem_act_dw[!cd8_cd4_mem_act_dw$term %in% c("Tcell_mem_act"),]
+
+cd8_cd4_mem_res_dw <- broom::tidy(cd8_cd4_mem_res) %>% mutate(model = "cd8_cd4_mem_rest")
+cd8_cd4_mem_res_dw <- cd8_cd4_mem_res_dw[!cd8_cd4_mem_res_dw$term %in% c("CD4_mem_rest"),]
+
+dw1 <- dwplot(cd8_tregs_dw,  dodge_size = 0.8) 
+dw2 <- dwplot(cd8_cd4_dw,  dodge_size = 0.8)
+dw3 <- dwplot(cd8_cd4_mem_act_dw,  dodge_size = 0.8)
+dw4 <- dwplot(cd8_cd4_mem_res_dw,  dodge_size = 0.8)
+
+d11 <- dw1 + 
+  ggplot2::theme_bw() +
+  ggplot2::theme(axis.text = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)), legend.position = "none") + 
+  geom_vline(xintercept=0, linetype="dashed")+
+  geom_segment(aes(x=conf.low, y=term, xend=conf.high, yend=term), colour="darkorange4") +
+  geom_point(aes(x=estimate, y=term), colour="brown1", size=5)
+
+d1 <- dw1 + 
+  ggplot2::theme_bw() +
+  ggplot2::theme(axis.title.y = element_blank(), axis.text.y=element_blank(), axis.ticks.y =element_blank(), 
+                 axis.text = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)), legend.position = "none") + 
+  geom_vline(xintercept=0, linetype="dashed")+
+  geom_segment(aes(x=conf.low, y=term, xend=conf.high, yend=term), colour="darkorange4") +
+  geom_point(aes(x=estimate, y=term), colour="brown1", size=5)
+
+d2 <-  dw2 + 
+  ggplot2::theme_bw() + 
+  ggplot2::theme(axis.title.y = element_blank(), axis.text.y=element_blank(), axis.ticks.y =element_blank(), 
+                 axis.text = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)), legend.position = "none") + 
+  geom_vline(xintercept=0, linetype="dashed")+
+  geom_segment(aes(x=conf.low, y=term, xend=conf.high, yend=term), colour="chocolate2") +
+  geom_point(aes(x=estimate, y=term), colour="darkorchid2", size=5)
+
+d3 <- dw3 + 
+  ggplot2::theme_bw() + 
+  ggplot2::theme(axis.title.y = element_blank(), axis.text.y=element_blank(), axis.ticks.y =element_blank(), 
+                 axis.text = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)), legend.position = "none") +
+  geom_vline(xintercept=0, linetype="dashed") +
+  geom_segment(aes(x=conf.low, y=term, xend=conf.high, yend=term), colour="darkgoldenrod4") +
+  geom_point(aes(x=estimate, y=term), colour="coral", size=5)
+
+d4 <- dw4 + 
+  ggplot2::theme_bw() + 
+  ggplot2::theme(axis.title.y = element_blank(), axis.text.y=element_blank(), axis.ticks.y =element_blank(), 
+                 axis.text = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)), legend.position = "none") + 
+  geom_vline(xintercept=0, linetype="dashed") +
+  geom_segment(aes(x=conf.low, y=term, xend=conf.high, yend=term), colour="coral3") +
+  geom_point(aes(x=estimate, y=term), colour="deeppink", size=5)
+ 
+dw_cd8 <- ggarrange(d1, d2, d3, d4, ncol = 4, nrow = 1, common.legend = TRUE, legend = 'none', widths = c(1,1,1,1)) 
+
+dw_cd8_axis <- ggarrange(d11, d2, d3, d4, ncol = 4, nrow = 1, common.legend = TRUE, legend = 'none', widths = c(1,1,1,1)) 
+dw_cd8_axis
+
+#ggsave(filename = "~/Documents/Research/pml/pml_wo_infl/high_res_imgs_wo_infl/cd8_dw.png", plot = dw_cd8, width = 10, height = 10)
+
+```
+
+

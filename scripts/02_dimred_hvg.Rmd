@@ -1,0 +1,388 @@
+---
+title: "Filtering and DimRed"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#library(hashmap)
+library(ggplot2)
+library(plotly)
+library(stringr)
+library(DT)
+library(plyr)
+library(dplyr)
+library(biomaRt)
+library(Biobase)
+library(reshape2)
+library(formattable)
+library(VennDiagram)
+library(hypeR)
+library(xlsx)
+library(ggsci)
+library(ComplexHeatmap)
+PATH <- ".."
+```
+
+## Recap
+The summary statistics and respective plots along with eSet creation is in `00_pml_summstats_eset.{Rmd, html}`, imputation with random forest is in `00_imp_summary.{Rmd, html}`, This file contains filtering of samples along with dimensionality reduction using pca, tsne and umap.
+
+```{r}
+eSet <- readRDS(file.path(PATH, "data/2021_08_20_eset_imputed.RDS"))
+table(eSet$Class)
+eSet_wo_infl <- eSet[, which(pData(eSet)$Class != 'Inflammatory')]
+cpm_eset <- eSet_wo_infl
+exprs(cpm_eset) <- apply(exprs(cpm_eset), 2, function(x) {x/(sum(x)/1000000)})
+print(dim(cpm_eset))
+
+cpm_eset$Class <- recode(cpm_eset$Class, "Control"="1-Control", "HkNR"="2-HkNR", "Dysplasia"="3-Dysplasia", "Cancer"="4-OSCC")
+cpm_eset$Class <- factor(cpm_eset$Class, levels = c("1-Control", "2-HkNR", "3-Dysplasia", "4-OSCC"))
+```
+
+## Dimensionality reduction {.tabset .tabset-fade .tabset-pills}
+### PCA
+
+```{r}
+set.seed(1234)
+#exprs(cpm_eset)
+exprsMat <- log2(exprs(cpm_eset)+1)
+rv <- matrixStats::rowVars(exprsMat)
+featureSet <- order(rv, decreasing = TRUE)
+exprsToPlot <- exprsMat[featureSet, , drop = FALSE]
+exprsToPlot <- scale(t(exprsToPlot))
+keepFeature <- (matrixStats::colVars(exprsToPlot) > 0.001)
+keepFeature[is.na(keepFeature)] <- FALSE
+exprsToPlot <- exprsToPlot[, keepFeature]
+
+pca <- prcomp(exprsToPlot)
+percentVar <- pca$sdev ^ 2 / sum(pca$sdev ^ 2)
+pcaVariance <- data.frame(percentVar)
+rownames(pcaVariance) <- colnames(pca$x)
+dtp <- data.frame(pca$x)
+dtp$Sample <- colnames(cpm_eset)
+dtp$Class <- pData(cpm_eset)$Class
+dtp$Type <-  pData(cpm_eset)$Type
+pcXlab <- paste0('PC1', " ", toString(round(pcaVariance['PC1', ] * 100, 2)), "%","(Exp. Var)")
+pcYlab <- paste0('PC2', " ", toString(round(pcaVariance['PC2', ] * 100, 2)), "%","(Exp. Var)")
+plotly::ggplotly(ggplot(data = dtp, aes_string(x=dtp$PC1, y=dtp$PC2, label= "Sample", col = "Class", shape="Type"))+  ggplot2::geom_point() +  ggplot2::labs(x = pcXlab, y = pcYlab))
+```
+
+### tSNE
+
+```{r}
+set.seed(1234)
+tsneOut <- Rtsne::Rtsne(exprsToPlot, perplexity = 5, initial_dims = max(50, ncol(cpm_eset)), max_iter = 200, pca=TRUE, pca_scale=TRUE )
+tsneOut <- tsneOut$Y[, c(1, 2)]
+dtp <- data.frame(tsneOut)
+dtp$Sample <- colnames(cpm_eset)
+dtp$Class <- pData(cpm_eset)$Class
+dtp$Type <-  pData(cpm_eset)$Type
+
+
+plotly::ggplotly(ggplot(data = dtp, aes_string(x=dtp$X1, y=dtp$X2, label= "Sample", col = "Class", shape="Type"))+  ggplot2::geom_point()+ ggplot2::labs(x = 'tSNE1', y = 'tSNE2'))
+
+```
+
+### UMAP
+
+```{r}
+ggstyle <- function(font="Helvetica", scale=1) {
+  fs <- function(x) x*scale # Dynamic font scaling
+  ggplot2::theme(
+    plot.title = ggplot2::element_text(family=font, size=fs(26), face="bold", color="#222222"),
+    plot.subtitle = ggplot2::element_text(family=font, size=fs(18), margin=ggplot2::margin(0,0,5,0)),
+    plot.caption = ggplot2::element_blank(),
+    legend.position = "right",
+    legend.text.align = 0,
+    legend.background = ggplot2::element_blank(),
+    legend.title = ggplot2::element_blank(),
+    legend.key = ggplot2::element_text(family=font, size=fs(20), face = "bold", color="#222222"),
+    legend.text = ggplot2::element_text(family=font, size=fs(20), face = "bold", color="#222222"),
+    axis.title =  ggplot2::element_text(family=font, size=fs(18), face = "bold", color="#222222"),
+    axis.text = ggplot2::element_text(family=font, size=fs(18), face = "bold", color="#222222"),
+    axis.text.x = element_text(angle = 45, hjust = 1, margin=ggplot2::margin(5, b=10)),
+    #axis.ticks = ggplot2::element_blank(),
+    axis.line = ggplot2::element_line(color="#222222"),
+    panel.grid.minor = ggplot2::element_line(color="#222222"),
+    panel.grid.major.y = ggplot2::element_line(color="#222222"),
+    panel.grid.major.x = ggplot2::element_line(color="#222222"),
+    panel.background = ggplot2::element_rect(fill="grey90"),
+    strip.background = ggplot2::element_rect(fill="grey90", colour = "black"),
+    strip.text = ggplot2::element_text(size=fs(22), hjust=0)
+  )
+}
+```
+
+## Top 500 genes UMAP
+### UMAP
+
+```{r}
+set.seed(1357)
+var_genes <- apply(exprs(eSet_wo_infl), 1, var)
+top_2000 <- names(var_genes[order(var_genes,decreasing = TRUE)][1:500])
+
+exprsMat <- exprs(eSet_wo_infl[top_2000])
+rv <- matrixStats::rowVars(exprsMat)
+featureSet <- order(rv, decreasing = TRUE)
+exprsToPlot <- exprsMat[featureSet, , drop = FALSE]
+exprsToPlot <- scale(t(exprsToPlot))
+keepFeature <- (matrixStats::colVars(exprsToPlot) > 0.001)
+keepFeature[is.na(keepFeature)] <- FALSE
+exprsToPlot <- exprsToPlot[, keepFeature]
+
+#run PCA
+pca <- prcomp(exprsToPlot)
+percentVar <- pca$sdev ^ 2 / sum(pca$sdev ^ 2)
+pcaVariance <- data.frame(percentVar)
+rownames(pcaVariance) <- colnames(pca$x)
+dtp <- data.frame(pca$x)
+dtp$Sample <- colnames(cpm_eset)
+dtp$Class <- pData(cpm_eset)$Class
+dtp$Type <-  pData(cpm_eset)$Type
+
+custom.config <- umap::umap.defaults
+custom.config$n_neighbors <- 5
+custom.config$alpha <-0.1
+custom.config$n_epochs <- 10000
+custom.config$metric <- 'euclidean'
+custom.config$init <- 'spectral'
+  
+umap_results <- umap::umap(dtp[,2:10], config = custom.config)
+dtp <- data.frame(umap_results$layout)
+dtp$Sample <- colnames(cpm_eset)
+dtp$Class <- pData(cpm_eset)$Class
+dtp$smoke <- as.character(pData(cpm_eset)$Smoking_status)
+dtp$age <- pData(cpm_eset)$Age
+dtp$sex <- pData(cpm_eset)$Sex
+dtp$prog <- pData(cpm_eset)$Progression_status
+
+p <- ggplot(data = dtp, 
+             aes(x=X1,
+                 y=X2, 
+                 label= Sample,
+                 group=Class
+               )) +
+  ggplot2::geom_point(size = 4, aes(shape= Class, color=Class, fill=Class)) +
+  scale_shape_manual(values=c(21, 22, 23, 24))+
+  scale_color_npg(alpha = 0.7)+
+  scale_fill_npg(alpha = 0.7)+
+  ggplot2::labs(x = 'UMAP1', y = 'UMAP2') +
+  theme_bw() +
+  ggplot2::theme(strip.text.x = ggplot2::element_text(size = 8),
+                  axis.text.x = element_text(margin=ggplot2::margin(5, b=10)),
+                  axis.text = element_text(size = 10, family='Helvetica', color="black"), 
+                  axis.title = element_text(size = 12, family='Helvetica', color="black"),
+                  legend.text = ggplot2::element_text(family='Helvetica', size=(10),  color="black")
+                  )
+p
+  
+#latest w/ progression status 
+p <- dtp %>% ggplot(aes(
+               x=X1, 
+               y=X2, 
+               label= Sample,
+               group=Class, 
+               shape= Class, 
+               color=Class
+               )) +
+  ggplot2::geom_point(size = 4, aes(shape= Class, color=Class, fill=Class)) +
+  scale_shape_manual(values=c(21, 22, 23, 24))+
+  scale_color_npg(alpha = 0.7)+
+  scale_fill_npg(alpha = 0.7)+
+  geom_point(data = dtp %>% filter((prog=="Stable")), 
+             pch=21,
+             size=7, fill="grey",
+              alpha = 0.5,
+             colour="black") +
+  geom_point(data = dtp %>% filter((prog=="Progressed-SCC")), 
+             pch=22,
+             size=7, fill="orange", 
+            alpha = 0.5,
+             colour="red") + 
+  geom_point(data = dtp %>% filter((prog=="Progressed-Dys")), 
+             pch=22,
+             size=7,fill="lightblue", 
+             alpha = 0.5,
+              
+             colour="blue") +
+  ggplot2::labs(x = 'UMAP1', y = 'UMAP2') +
+  theme_bw() +
+  ggplot2::theme(strip.text.x = ggplot2::element_text(size = 8),
+                  axis.title = element_blank(), 
+                  legend.text = ggplot2::element_text(family='Helvetica', size=(10),  color="black"), legend.position = "bottom")
+p
+
+```
+
+## KMeans Clustering on UMAP {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+set.seed(1234)
+koutput <- kmeans(umap_results$layout, 3)
+
+cpm_eset$cluster <- koutput$cluster
+#match cluster #s to already implemented in umap 
+cpm_eset$cluster <- recode(cpm_eset$cluster, "3"="1", "2"="2", "1"="3")
+dtp$cluster <- pData(cpm_eset)$cluster
+
+umap_clust <- ggplot(data = dtp, aes(x=X1, y=X2, label= Sample, col = cluster, shape=Class))+
+              ggplot2::geom_point(size=4, aes(shape= Class, color=cluster, fill=cluster)) + 
+              scale_shape_manual(values=c(21, 22, 23, 24))+
+              scale_color_manual(aesthetics = c("color", "fill"), values = c("3"="#41b6c4", "2"="#a1dab4", "1"="#fecc5c"))+
+              ggplot2::labs(x = 'UMAP1', y = 'UMAP2') +
+              theme_bw()+
+              ggplot2::theme(strip.text.x = ggplot2::element_text(size = 8),
+                                   axis.title = element_blank())
+
+umap_clust
+
+```
+
+## Chi-sq test {.tabset .tabset-fade .tabset-pills}
+
+```{r}
+##mlcust
+library(mclust)
+BIC <- mclustBIC(exprsToPlot)
+mod1 <- Mclust(exprsToPlot, x = BIC)
+table(mod1$classification)
+
+dtp$cluster <- mod1$classification[match(rownames(dtp),names(mod1$classification))]
+
+ggplot(data = dtp, aes_string(x=dtp$X1, y=dtp$X2, label= "Sample", col = factor(dtp$cluster), shape='Class'))+  scale_colour_manual(values=c("red", "blue", "black")) +ggplot2::geom_point(size=3)+ ggplot2::labs(x = 'UMAP1', y = 'UMAP2')
+
+#using mclust
+clust_df <- data.frame(cluster=mod1$classification, class=cpm_eset$Class)
+tab_df <- table(clust_df)
+chiqs <- chisq.test(tab_df)
+chiqs$residuals
+
+#using kmeans
+kmeans_df <- data.frame(cluster=koutput$cluster, class=cpm_eset$Class)
+tab_df <- table(kmeans_df)
+chiqs <- chisq.test(tab_df)
+chiqs$residuals
+
+```
+
+## HVGs heatmap {.tabset .tabset-fade .tabset-pills}
+
+```{r warning=F, message=F}
+library(Biobase)
+library(cba)
+library(ComplexHeatmap)
+library(scales)
+library(circlize)
+```
+
+```{r load.data}
+pml <- cpm_eset
+exprs(pml) <- log2(exprs(pml)+1)
+pml2K <- BS831::variationFilter(pml,ngenes=2000,score="mad",do.plot=TRUE)
+```
+
+```{r pdata.annotation}
+annot <- pData(pml) %>% 
+  dplyr::select(imputed_smoking_label,Sex,Progression_status,Class)  %>% 
+  dplyr::rename(Smoker=imputed_smoking_label,Progression=Progression_status)  %>% 
+  dplyr::mutate(Class = factor(Class, levels=c("1-Control","2-HkNR","3-Dysplasia","4-OSCC")))  %>% 
+  dplyr::relocate(Class,Progression,Smoker,Sex)
+```
+
+### Heatmap {.tabset .tabset-fade .tabset-pills}
+
+```{r ComplexHeatmap}
+hm_annot <- ComplexHeatmap::HeatmapAnnotation(
+  Smoker = annot$Smoker,
+  Sex = annot$Sex,
+  Progression = annot$Progression,
+  Class = annot$Class,
+  col = list(Class = c("1-Control" = "#E64B35B2",
+                       "2-HkNR" = "#4DBBD5B2", 
+                       "3-Dysplasia" = "#00A087B2", 
+                       "4-OSCC" = "#3C5488B2"),
+              Progression = c("NA"="white",
+                              "Stable" = "gray",
+                              "Progressed-SCC" = "red",
+                              "Progressed-Dys" = "pink"), 
+             Smoker = c("No"="gray", "Yes"="black"),
+             Sex = c("F"="pink", "M"="lightblue")), na_col = "white")
+
+pml2K_scaled <- BS831::scale_row(pml2K)
+mad_genes <- rownames(exprs(pml2K_scaled))
+```
+
+
+```{r}
+HALLMARK <-  msigdb_gsets("Homo sapiens", "H", "")
+names(HALLMARK$genesets) <- names(HALLMARK$genesets) %>% strsplit( "HALLMARK_" ) %>% sapply( tail, 1 )
+
+krt_genes <- mad_genes[grepl(pattern = "KRT", x = mad_genes)]
+
+epi_genes <- unique(c(HALLMARK$genesets$EPITHELIAL_MESENCHYMAL_TRANSITION[HALLMARK$genesets$EPITHELIAL_MESENCHYMAL_TRANSITION %in% rownames(exprs(pml2K_scaled))], krt_genes))
+epi_index <- match(epi_genes, rownames(exprs(pml2K_scaled)))
+
+infl_genes <- unique(c(HALLMARK$genesets$INTERFERON_GAMMA_RESPONSE[HALLMARK$genesets$INTERFERON_GAMMA_RESPONSE %in% rownames(exprs(pml2K_scaled))], HALLMARK$genesets$INFLAMMATORY_RESPONSE[HALLMARK$genesets$INFLAMMATORY_RESPONSE %in% rownames(exprs(pml2K_scaled))]))
+infl_index <- match(infl_genes, rownames(exprs(pml2K_scaled)))
+
+dend = as.dendrogram(hclust(dist(exprs(pml2K_scaled)), method = 'ward.D'))
+
+od = order.dendrogram(dend)
+
+selected1 = od[which(labels(dend) %in% epi_genes)]
+selected2 = od[which(labels(dend) %in% infl_genes)]
+```
+
+
+```{r fig.width=8, fig.height=10}
+ComplexHeatmap::Heatmap(Biobase::exprs(pml2K_scaled),
+        name="expression", 
+        top_annotation=hm_annot, 
+        cluster_rows=dend,
+        row_dend_reorder = F,
+        cluster_columns=TRUE,
+        clustering_distance_columns="euclidean",
+        clustering_method_columns="ward.D", 
+        column_split=3,
+        show_parent_dend_line=TRUE,
+        row_title="",
+        show_column_names=FALSE,
+        show_row_names=FALSE) +
+        rowAnnotation(link1 = anno_mark(at = selected1, 
+                                link_width = unit(0, "mm"),
+                                link_gp = gpar(lwd=0.1),
+                                padding = unit(0, "mm"),
+                                labels = rownames(exprs(pml2K_scaled))[selected1], side = "right",
+                                labels_gp = gpar(fontsize = 2, 
+                                                 fontface = "bold",
+                                                 col = "red"
+                                                 )))+
+        rowAnnotation(link2 = anno_mark(at = selected2, 
+                                link_width = unit(0, "mm"),
+                                link_gp = gpar(lwd=0.1),
+                                padding = unit(0, "mm"),
+                                labels = rownames(exprs(pml2K_scaled))[selected2], side = "right",
+                                labels_gp = gpar(fontsize = 2, 
+                                                 fontface = "bold",
+                                                 col = "darkgreen"
+                                                 )))  
+```
+
+
+
+
+
+
+

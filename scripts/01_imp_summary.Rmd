@@ -1,0 +1,494 @@
+---
+title: "eSet Creation and Smoking Status Imputation"
+author: "M. Muzamil Khan"
+date: "8/17/2021"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  html_notebook:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#library(hashmap)
+library(ggplot2)
+library(stringr)
+library(DT)
+library(plyr)
+library(dplyr)
+library(biomaRt)
+library(Biobase)
+library(reshape2)
+library(formattable)
+library(VennDiagram)
+library(hypeR)
+library(xlsx)
+PATH <- ".."
+```
+
+## Recap
+The summary statistics and respective plots along with eSet creation is in `00_summstats_eset.{Rmd, html}`. This script contains imputation steps that were performed to predict 'smoking status' for patients with missing status.
+
+```{r}
+eSet <- readRDS(file.path(PATH, "data/eSet_2021_08_12.RDS"))
+filtered_eset <- eSet[, which(eSet$Type=="Biopsy" & eSet$Class != 'Inflammatory')]
+filtered_df <- filtered_eset[, which(filtered_eset$mapping_rate > 40)]
+eSet_filtered <- eSet[, which((colnames(eSet)  %in% filtered_df$Sample_ID)!=0)]
+groups <- pData(eSet_filtered)[,'Class']
+min.samples <- min(sapply(groups, function(x){length(which(groups %in% x))}))
+cpm <- colSums(exprs(eSet_filtered))/1e6
+filter_ind <- t(apply(exprs(eSet_filtered), 1, function(x) {x > cpm}))
+filter_ind_rowsums <- apply(filter_ind, 1, sum)
+eset <- eSet_filtered[filter_ind_rowsums > min.samples,]
+eset_main <- eset
+
+eset$Class <- recode(eset$Class, "Cancer"="OSCC")
+```
+
+
+```{r eval=F}
+variationFilter <- function(dat,
+                            score=c("mad","sd","cv"),
+                            dir=c("top","bottom"),
+                            transform=c("none","log2","exp2","log","exp"),
+                            ngenes=NULL,
+                            min.score=NULL,
+                            min.log=1,
+                            rnd=4,
+                            do.plot=FALSE,
+                            pch=".",
+                            lgnd.coord=1,
+                            do.log="",
+                            qnt.lev=0.5,
+                            min.qnt=-Inf,
+                            no.affx=FALSE,
+                            verbose=TRUE)
+{
+  if (is.null(ngenes) && is.null(min.score) )
+    stop( "must specify either ngenes or min.score" )
+  if (!is.null(ngenes) && !is.null(min.score) )
+    stop( "cannot specify both ngenes and min.score" )
+  if (!is.null(ngenes) && ngenes>nrow(dat) )
+    stop( "ngenes is too large" )
+  if (min.log<=0)
+    stop( "min.log must be positive: ", min.log )
+  if ( class(dat)!='ExpressionSet' )
+    stop( "ExpressionSet object expected: ",class(dat) )
+
+  transform <- match.arg(transform)
+  dir <- match.arg(dir)
+  score <- match.arg(score)
+  score.fun <- match.fun(score)
+
+  if (transform=="log2" || transform=="log") { # threshold before log-transformation
+    VERBOSE( verbose, "Thresholding before log-transforming .. " )
+    Biobase::exprs(dat)[Biobase::exprs(dat)<min.log] <- min.log
+    VERBOSE( verbose, "done.\n" )
+  }
+  Biobase::exprs(dat) <- switch(transform,
+                       none=Biobase::exprs(dat),
+                       log2=round(log2(Biobase::exprs(dat)),rnd),
+                       exp2=round(2^(Biobase::exprs(dat)),rnd),
+                       log=round(log(Biobase::exprs(dat)),rnd),
+                       exp=round(exp(Biobase::exprs(dat)),rnd))
+
+  if (no.affx) {
+    if ( length(rm.idx <- grep("AFFX-",featureNames(dat)))>0 ) {
+      VERBOSE(verbose,"Removing 'AFFX-' probes ..")
+      dat <- dat[-rm.idx,,drop=FALSE]
+      VERBOSE(verbose," done,", length(rm.idx),"removed.\n")
+    }
+  }
+  ctr <- if (score=="mad") apply( Biobase::exprs(dat), 1, median ) else rowMeans( Biobase::exprs(dat) )
+  SC <- SC1 <- apply( Biobase::exprs(dat), 1, score.fun )
+
+  if (min.qnt>0)
+  {
+    VERBOSE(verbose, "Filtering out genes w/ ",round(100*qnt.lev,2), "-percentile < ", min.qnt, " .. ",sep="" )
+    QNT <- apply(Biobase::exprs(dat),1,quantile,probs=qnt.lev)
+    if ( sum(QNT>=min.qnt)<2 )
+      stop( "filtering by min.qnt returns less than 2 genes (try decreasing min.qnt)" )
+    dat <- dat[QNT>=min.qnt,,drop=FALSE]
+    VERBOSE(verbose, "done,", nrow(dat), "genes left.\n")
+
+    if ( !is.null(ngenes) && nrow(dat)<=ngenes ) {
+      VERBOSE(verbose,"Number of genes left is less than required, no further filtering necessary")
+      return(dat)
+    }
+    SC1 <- SC[QNT>=min.qnt]
+  }
+  VERBOSE(verbose, "Variation filtering based on", score, ".. " )
+  
+  VERBOSE(verbose, "done.\n" )
+  
+  idx <- NULL
+  if ( is.null(ngenes) ) {
+    VERBOSE(verbose, "Selecting genes with", score, "<=", min.score, ".. " )
+    idx <- if(dir=="top") SC1>=min.score else SC1<=min.score
+    if (sum(idx)==0)
+      stop( "no genes passed the filtering criteria" )
+  }
+  else {
+    VERBOSE(verbose, "Selecting top", ngenes, "by", score, ".. " )
+    if (dir=="top") SC1 <- -SC1
+    idx <- order(SC1)[1:ngenes]
+  }
+  dat <- dat[idx,,drop=FALSE]
+  VERBOSE(verbose, "done,", nrow(dat), "genes selected.\n" )
+
+  if (do.plot) {
+    VERBOSE(verbose, "Creating scatter plot .. ")
+    if (is.null(do.log)) {
+      do.log <- if (transform=="none" || transform=="exp2" || transform=="exp" )
+        "xy"
+      else
+        ""
+    }
+    SC <- abs(SC)
+    plot( ctr, SC, pch=pch, col="gray", xlab=if (score=="mad") "median" else "mean", ylab=score, log=do.log)
+    plot.idx <- match( featureNames(dat),names(SC) )
+    points( ctr[plot.idx], SC[plot.idx],pch=pch,col="red")
+    lx <- min(ctr); ly <- max(SC); xjust <- 0; yjust <- 1
+    if (lgnd.coord==2) {
+      lx <- max(ctr); xjust <- 1
+    }
+    else if (lgnd.coord==3) {
+      lx <- max(ctr); ly <- min(SC); xjust <- 1; yjust <- 0
+    }
+    else if (lgnd.coord==4) {
+      ly <- min(SC); yjust <- 0
+    }
+    else if (lgnd.coord!=1)
+      stop( "lgnd.coord must be btw 1 and 4" )
+    
+    legend(lx, ly, xjust=xjust, yjust=yjust,
+           legend=c("all","passing filter"), col=c("gray","red"), pch=20)
+    VERBOSE(verbose, "done.\n")
+  }
+  dat
+}
+
+VERBOSE <- function( v, ... )
+{
+  if ( v ) cat( ... )
+}
+```
+
+## Impute Missing Labels
+### caret classification {.tabset .tabset-fade .tabset-pills}
+
+```{r eval=F}
+library(caret)
+set.seed(3456)
+eset_smoke <- eset[, which(!is.na(pData(eset)$Smoking_status)==TRUE)]
+
+eset_smoke1 <- variationFilter(eset_smoke, ngenes=1000, score="mad", do.plot=FALSE)
+
+discovery_smoke_ind <- caret::createDataPartition(eset_smoke1$Smoking_status,  p = 0.7, times = 1)
+discovery_smoke <- eset_smoke1$Sample_ID[discovery_smoke_ind$Resample1]
+validation_smoke <- eset_smoke1$Sample_ID[-discovery_smoke_ind$Resample1]
+
+esetdiscovery <- eset_smoke1[,eset_smoke1$Sample_ID %in% discovery_smoke]
+esetvalidation <- eset_smoke1[,eset_smoke1$Sample_ID %in% validation_smoke]
+
+discovery <- data.frame(t(Biobase::exprs(esetdiscovery)))
+discoveryLab <- factor(esetdiscovery$Smoking_status, levels = c("Yes", "No"))
+
+validation <- data.frame(t(Biobase::exprs(esetvalidation)))
+validationLab <- factor(esetvalidation$Smoking_status, levels = c("Yes", "No"))
+
+```
+
+
+#### kNN {.tabset .tabset-fade .tabset-pills}
+
+```{r eval=F}
+## KNN with 5x cross validation
+fitControl <- trainControl(method="cv",
+                           number=5,
+                           classProbs=T,
+                           summaryFunction=twoClassSummary)
+set.seed(1234) # for reproducible results
+
+## evaluate on train set based on area under the ROC (AUC)
+KNN <- train(x=discovery,
+             y=discoveryLab,
+             method="knn",
+             trControl=fitControl,
+             tuneGrid=expand.grid(.k=c(3,5,7,9,20)),
+             metric='ROC')
+## summary of performance across each value of tuning parameters
+KNN
+plot(KNN, metric = "ROC")
+KNN$bestTune
+KNN$finalModel
+```
+
+```{r eval=F}
+## predicting the validation data:
+pred <- predict(KNN,validation)
+
+## or predicting using the probabilities (nice because you can get ROC)
+probs <- extractProb(list(model=KNN),
+                     testX=validation,
+                     testY=validationLab)
+
+## removing trainings data
+probs <- probs[probs$dataType!='Training',]
+
+## Make sure the levels are appropriate for twoClassSummary(), ie case group is first level
+levs <- c("Yes", "No")
+probs$obs <- factor(probs$obs, levels = levs)
+probs$pred <- factor(probs$pred, levels = levs)
+
+## Calculating Accuracy
+mean(probs$obs==probs$pred)
+table(probs$obs, probs$pred)
+twoClassSummary(probs, lev = levels(probs$obs))
+```
+
+#### Random Forest {.tabset .tabset-fade .tabset-pills}
+
+```{r eval=F}
+## RandomForest with 5x cross validation
+fitControl <- trainControl(method="cv",
+                           number=5,
+                           classProbs=T,
+                           summaryFunction=twoClassSummary)
+
+set.seed(1234) # for reproducible results
+
+## evaluate on train set based on area under the ROC (AUC)
+RF <- train(x=discovery,
+             y=discoveryLab,
+             method="rf",
+             trControl=fitControl,
+             tuneGrid=expand.grid(mtry=c(33, 50, 100, 250, 500)),
+             metric='ROC', cutoff=c(0.4, 0.6))
+## summary of performance across each value of tuning parameters
+RF
+plot(RF, metric = "ROC")
+## show the parameters that yield the most accurate classifier (as estimated by cv)
+RF$bestTune
+RF$finalModel
+
+```
+```{r eval=F}
+## predicting the validation data:
+predRF <- predict(RF,validation)
+
+## or predicting using the probabilities (nice because you can get ROC)
+probsRF <- extractProb(list(model=RF),
+                     testX=validation,
+                     testY=validationLab)
+
+## removing trainings data
+probsRF <- probsRF[probsRF$dataType!='Training',]
+
+## Make sure the levels are appropriate for twoClassSummary(), ie case group is first level
+levs <- c("Yes", "No")
+probsRF$obs <- factor(probsRF$obs, levels = levs)
+probsRF$pred <- factor(probsRF$pred, levels = levs)
+
+## Calculating Accuracy
+mean(probsRF$obs==probsRF$pred)
+
+## see classification prob for each sample in validation set
+## pred column shows model predicted label if cutoff for calling label = 0.5
+table(probsRF$obs, probsRF$pred)
+twoClassSummary(probsRF, lev = levels(probsRF$obs))
+ModelMetrics::fScore(actual = probsRF$obs, predicted = probsRF$pred)
+retrieved <- length(probsRF$pred)
+precision <- sum(probsRF$pred == probsRF$obs) / retrieved
+recall <- sum(probsRF$pred == probsRF$obs) / length(probsRF$obs)
+Fmeasure <- 2 * precision * recall / (precision + recall)
+Fmeasure
+```
+
+#### SVM {.tabset .tabset-fade .tabset-pills}
+
+```{r eval=F}
+## SVM with 5x cross validation
+fitControl <- trainControl(method="cv",
+                           number=5,
+                           classProbs=T,
+                           summaryFunction=twoClassSummary)
+
+set.seed(1234) # for reproducible results
+
+## evaluate on train set based on area under the ROC (AUC)
+SVM <- train(x=discovery,
+             y=discoveryLab,
+             method="svmLinear2",
+             trControl=fitControl,
+             tuneGrid=expand.grid(cost=10^(seq(-4.5, -3, by = 0.05))),
+             metric='ROC')
+## summary of performance across each value of tuning parameters
+SVM
+
+plot(SVM, metric = "ROC")
+SVM$bestTune
+SVM$finalModel
+```
+
+
+```{r eval=F}
+## predicting the validation data:
+predSVM <- predict(SVM,validation)
+
+## or predicting using the probabilities (nice because you can get ROC)
+probsSVM <- extractProb(list(model=SVM),
+                     testX=validation,
+                     testY=validationLab)
+
+## removing trainings data
+probsSVM <- probsSVM[probsSVM$dataType!='Training',]
+
+## Make sure the levels are appropriate for twoClassSummary(), ie case group is first level
+levs <- c("Yes", "No")
+probsSVM$obs <- factor(probsSVM$obs, levels = levs)
+probsSVM$pred <- factor(probsSVM$pred, levels = levs)
+
+## Calculating Accuracy
+mean(probsSVM$obs==probsSVM$pred)
+
+table(probsSVM$obs, probsSVM$pred)
+twoClassSummary(probsSVM, lev = levels(probsSVM$obs))
+```
+
+### RF to impute {.tabset .tabset-fade .tabset-pills}
+
+Using RF(Acc=79%) which was the highest among other methods so this will be used to impute missing smoking status data.
+
+```{r eval=F}
+eset <- eSet_wo_infl
+set.seed(3456)
+eset_smoke <- eset[, which(!is.na(pData(eset)$Smoking_status)==TRUE)]
+
+eset_smoke1 <- variationFilter(eset_smoke, ngenes=1000, score="mad", do.plot=FALSE)
+table(pData(eset_smoke1)$Smoking_status)
+
+discovery_smoke_ind <- caret::createDataPartition(eset_smoke1$Smoking_status,  p = 1, times = 1)
+discovery_smoke <- eset_smoke1$Sample_ID[discovery_smoke_ind$Resample1]
+validation_smoke <- eset_smoke1$Sample_ID[-discovery_smoke_ind$Resample1]
+
+valid_indices <- eset$Sample_ID[!eset$Sample_ID %in% eset_smoke$Sample_ID]
+validation_smoke <-c(validation_smoke, valid_indices)
+
+esetdiscovery <- eset_smoke1[,eset_smoke1$Sample_ID %in% discovery_smoke]
+esetvalidation <- eset[,eset$Sample_ID %in% validation_smoke]
+
+discovery <- data.frame(t(Biobase::exprs(esetdiscovery)))
+discoveryLab <- factor(esetdiscovery$Smoking_status, levels = c("Yes", "No"))
+
+validation <- data.frame(t(Biobase::exprs(esetvalidation)))
+validationLab <- factor(esetvalidation$Smoking_status, levels = c("Yes", "No"))
+```
+
+```{r eval=F}
+## RandomForest with 5x cross validation
+fitControl <- trainControl(method="cv",
+                            number=10,
+                           classProbs=T,
+                           summaryFunction=twoClassSummary)
+
+set.seed(1234) # for reproducible results
+
+## evaluate on train set based on area under the ROC (AUC)
+RF <- train(x=discovery,
+             y=discoveryLab,
+             method="rf",
+             trControl=fitControl,
+             tuneGrid=expand.grid(mtry=c(32, 50, 100, 250, 500)),
+             metric='ROC', cutoff=c(0.4, 0.6))
+## summary of performance across each value of tuning parameters
+RF
+plot(RF, metric = "ROC")
+## show the parameters that yield the most accurate classifier (as estimated by cv)
+RF$bestTune
+RF$finalModel
+
+```
+
+```{r eval=F}
+## predicting the validation data:
+predRF <- predict(RF,validation)
+
+## or predicting using the probabilities (nice because you can get ROC)
+probsRF <- extractProb(list(model=RF),
+                     testX=validation,
+                     testY=validationLab)
+
+## removing trainings data
+#probsRF <- probsRF[probsRF$dataType!='Training',]
+
+## Make sure the levels are appropriate for twoClassSummary(), ie case group is first level
+levs <- c("Yes", "No")
+#probsRF$obs <- factor(probsRF$obs, levels = levs)
+probsRF$pred <- factor(probsRF$pred, levels = levs)
+
+
+
+## see classification prob for each sample in validation set
+## pred column shows model predicted label if cutoff for calling label = 0.5
+table(probsRF$obs, probsRF$pred)
+df <- data.frame("obs"=probsRF$obs, "pred"=probsRF$pred)
+missing_data <- df[which(!is.na(df$obs)),]
+missing_data$error <- ifelse(missing_data$obs==missing_data$pred, "No", "Yes")
+table(missing_data$error)
+mean(missing_data$obs==missing_data$pred)
+
+probsRF$Sample_ID <- rownames(probsRF)
+```
+
+### Add predicted labels to eSet
+
+```{r eval=F}
+
+miss <- eset$Sample_ID[which(is.na(eset$Smoking_status))]
+eset$imputed_smoking_label <- eset$Smoking_status
+#fill in only the predicted missing labels
+
+for(i in 1:ncol(eset)) {
+  if (is.na(eset$Smoking_status[i])) {
+    eset$imputed_smoking_label[i] <- as.character(probsRF$pred[probsRF$Sample_ID == eset$Sample_ID[i]])
+  } else {
+    eset$imputed_smoking_label[i] <- eset$Smoking_status[i]
+  }
+}
+
+saveRDS(eset, file.path(PATH, "pml/2021_08_20_eset_imputed.RDS"))
+
+```
+
+
+## Summary Table {.tabset .tabset-fade .tabset-pills}
+
+```{r fig.width=10}
+library(gtsummary)
+library(webshot)
+
+annot_data <- pData(eset) %>% 
+              dplyr::select(Age, Sex, Class, Progression_status, Smoking_status)  %>% 
+              mutate(Class = dplyr::recode(Class, HkNR = "Hyperkeratotic; Not Reactive(HkNR)")) %>%
+              mutate(Class= factor(Class, levels = c("Control", "Hyperkeratotic; Not Reactive(HkNR)",  "Dysplasia", "OSCC"))) %>%
+              mutate(Sex = dplyr::recode(Sex, M = "Male",  F="Female")) %>%
+              mutate(`Progression Status` = dplyr::recode(Progression_status, `Progressed-Dys`="Progressed to Dysplasia", `Progressed-SCC`="Progressed to SCC")) %>%
+              mutate(`Progression Status` = factor(`Progression Status`, levels = c("Stable", "Progressed to Dysplasia", "Progressed to SCC")))
+annot_data$Progression_status <- NULL
+
+tbl_summary_1 <- tbl_summary(annot_data, by = Class, type = list(Smoking_status ~ "categorical"), statistic = all_continuous() ~ "{median} ({min}, {max})") %>%  
+  bold_labels()  %>%  modify_header(all_stat_cols() ~ "**{level}**<br>N =  {n} ({style_percent(p)}%)") %>% 
+  modify_spanning_header(all_stat_cols() ~ "**Histopathology Group**")
+
+tbl_summary_1 %>% as_gt()
+```
