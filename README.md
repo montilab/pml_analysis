@@ -12,7 +12,7 @@ A cohort of 66 patients' oral tissue were sequenced to obtain gene expression an
 `/results` - all results from various methods. <br />
 
 <u>A short description of analysis scripts: </u> <br />
-`00_summ_stats.{Rmd, html}` - <br />
+`00_summ_stats.{Rmd, html}` - summary statistics and eset creation <br />
 `01_imp_summary.{Rmd, html}` - imputation to obtain smoking status for missing patients (n=11) <br />
 `02_dimred_hvg.{Rmd, html}` - Dimensionality reduction on gene expression data, clustering analysis, finding highly variable genes. <br />
 `03_diffanalysis.{Rmd, html}` - pairwise differential expression analysis using DESeq2 between histopathological groups. <br />
