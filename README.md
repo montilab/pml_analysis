@@ -2,7 +2,7 @@
 
 This code repo contains relevant data, scripts and results for the PML project.
 
-**<u>Analysis overview:</u>**
+<u>**Analysis overview:**</u>
 A cohort of 66 patients' oral tissue were sequenced to obtain gene expression and microbial abundance profiles to study their transcriptome. The cohort were divided into five histopathological groups - control (normal mucosa), HkNR (hyperkeratosis; not reactive), dysplasia, and OSCC (oral squamous cell carcinoma). The key findings from this analysis is represented through this graphical abstract shown below:![Graphical Abstract](GraphicalAbstract.png)
 
 
