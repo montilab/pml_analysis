@@ -1,9 +1,9 @@
-<h1> Title: Total RNA sequencing reveals gene expression and microbial alterations shared by oral pre-malignant lesions and cancer. </h1>
+<h1> Title: Total RNA sequencing reveals gene expression and microbial alterations shared by Oral pre-malignant Lesions and Cancer. </h1>
 
-This code repo contains relevant data, scripts and results for the PML project.
+This code repo contains relevant data, scripts, and results for the PML project.
 
 <u>**Analysis overview:**</u>
-A cohort of 66 patients' oral tissue were sequenced to obtain gene expression and microbial abundance profiles to study their transcriptome. The cohort were divided into five histopathological groups - control (normal mucosa), HkNR (hyperkeratosis; not reactive), dysplasia, and OSCC (oral squamous cell carcinoma). The key findings from this analysis is represented through this graphical abstract shown below:![Graphical Abstract](GraphicalAbstract.png)
+A cohort of 66 patients' oral tissue was sequenced to obtain gene expression and microbial abundance profiles to study their transcriptome. The cohort was divided into four histopathological groups - control (normal mucosa), HkNR (hyperkeratosis; not reactive), dysplasia, and OSCC (oral squamous cell carcinoma). The key findings from this analysis are represented through this graphical abstract shown below:![Graphical Abstract](GraphicalAbstract.png)
 
 
 **Directory structure:** <br />
