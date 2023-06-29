@@ -42,8 +42,8 @@ PATH <- getwd()
 The summary statistics and respective plots along with eSet creation is in `00_summstats_eset.{Rmd, html}`, imputation with random forest is in `01_pml_imp_summary.{Rmd, html}`,  DimRed analysis is in `02_dimred_hvg.{Rmd, html}`. This file contains differential expression analysis using DESeq2 along with significant marker info. The analysis is performed with age, sex and smoking status as covariates with histopathological group.
 
 ```{r}
-eset <- readRDS(file.path(PATH, "data/2021_08_20_eset_imputed.RDS"))
-eSet_wo_infl <- eset[, which(pData(eset)$Class != 'Inflammatory')]
+eset <- readRDS(file.path(PATH, "data/2021_08_20_eset_imputed_updated.RDS"))
+eSet_wo_infl <- eset
 table(eSet_wo_infl$Class)
 cpm_eset <- eSet_wo_infl
 exprs(cpm_eset) <- apply(exprs(cpm_eset), 2, function(x) {x/(sum(x)/1000000)})
@@ -480,7 +480,7 @@ xlsx::write.xlsx(x=results_hknr.vs.dys, file.path(PATH, "results/PML.DiffEx.resu
 
 Store diffanal signatures to be used in GSEA analysis.
 
-```{r}
+```{r eval=F}
 cancer.vs.control_sign <- list(up= cancer.vs.control_marker_list[[1]],
                               down=cancer.vs.control_marker_list[[2]])
 

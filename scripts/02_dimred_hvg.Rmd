@@ -40,9 +40,9 @@ PATH <- ".."
 The summary statistics and respective plots along with eSet creation is in `00_pml_summstats_eset.{Rmd, html}`, imputation with random forest is in `00_imp_summary.{Rmd, html}`, This file contains filtering of samples along with dimensionality reduction using pca, tsne and umap.
 
 ```{r}
-eSet <- readRDS(file.path(PATH, "data/2021_08_20_eset_imputed.RDS"))
+eSet <- readRDS(file.path(PATH, "data/2021_08_20_eset_imputed_updated.RDS"))
 table(eSet$Class)
-eSet_wo_infl <- eSet[, which(pData(eSet)$Class != 'Inflammatory')]
+eSet_wo_infl <- eSet
 cpm_eset <- eSet_wo_infl
 exprs(cpm_eset) <- apply(exprs(cpm_eset), 2, function(x) {x/(sum(x)/1000000)})
 print(dim(cpm_eset))
