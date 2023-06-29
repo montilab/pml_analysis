@@ -39,9 +39,8 @@ PATH <- ".."
 The summary statistics and respective plots along with eSet creation is in `00_summstats_eset.{Rmd, html}`. This script contains imputation steps that were performed to predict 'smoking status' for patients with missing status.
 
 ```{r}
-eSet <- readRDS(file.path(PATH, "data/eSet_2021_08_12.RDS"))
-filtered_eset <- eSet[, which(eSet$Type=="Biopsy" & eSet$Class != 'Inflammatory')]
-filtered_df <- filtered_eset[, which(filtered_eset$mapping_rate > 40)]
+eSet <- readRDS(file.path(PATH, "data/eSet_2021_08_12_updated.RDS"))
+filtered_df <- eSet[, which(eSet$mapping_rate > 40)]
 eSet_filtered <- eSet[, which((colnames(eSet)  %in% filtered_df$Sample_ID)!=0)]
 groups <- pData(eSet_filtered)[,'Class']
 min.samples <- min(sapply(groups, function(x){length(which(groups %in% x))}))
@@ -466,19 +465,33 @@ for(i in 1:ncol(eset)) {
   }
 }
 
-saveRDS(eset, file.path(PATH, "pml/2021_08_20_eset_imputed.RDS"))
+saveRDS(eset, file.path(PATH, "data/2021_08_20_eset_imputed_updated.RDS"))
 
 ```
 
 
 ## Summary Table {.tabset .tabset-fade .tabset-pills}
 
-```{r fig.width=10}
+```{r eval=F}
+annot <- read.csv(file.path(PATH, "../data/2023_06_28_pml_annotations_updated.csv"))
+annot$Sample_ID <- gsub(x = annot$Sample_ID, pattern = "-", replacement = "_")
+annot <- annot[order(annot$Sample_ID),]
+  
+pData(eSet_wo_infl) <- cbind(pData(eSet_wo_infl), annot[match(annot$Sample_ID, pData(eSet_wo_infl)$Sample_ID),c("Alcohol_status", "Race")])
+
+table(eSet_wo_infl$Alcohol_status, useNA="ifany")
+table(eSet_wo_infl$Race, useNA="ifany")
+
+table(eSet_wo_infl$Alcohol_status, eSet_wo_infl$Class, useNA="ifany")
+table(eSet_wo_infl$imputed_smoking_label, eSet_wo_infl$Class, useNA="ifany")
+```
+
+```{r fig.width=10, fig.height=7}
 library(gtsummary)
 library(webshot)
-
-annot_data <- pData(eset) %>% 
-              dplyr::select(Age, Sex, Class, Progression_status, Smoking_status)  %>% 
+eSet_wo_infl <- readRDS(file.path(PATH, "data/2021_08_20_eset_imputed_updated.RDS"))
+annot_data <- pData(eSet_wo_infl) %>% 
+              dplyr::select(Age, Sex, Race, Class, Progression_status, Smoking_status, Alcohol_status)  %>% 
               mutate(Class = dplyr::recode(Class, HkNR = "Hyperkeratotic; Not Reactive(HkNR)")) %>%
               mutate(Class= factor(Class, levels = c("Control", "Hyperkeratotic; Not Reactive(HkNR)",  "Dysplasia", "OSCC"))) %>%
               mutate(Sex = dplyr::recode(Sex, M = "Male",  F="Female")) %>%
@@ -486,9 +499,11 @@ annot_data <- pData(eset) %>%
               mutate(`Progression Status` = factor(`Progression Status`, levels = c("Stable", "Progressed to Dysplasia", "Progressed to SCC")))
 annot_data$Progression_status <- NULL
 
-tbl_summary_1 <- tbl_summary(annot_data, by = Class, type = list(Smoking_status ~ "categorical"), statistic = all_continuous() ~ "{median} ({min}, {max})") %>%  
+tbl_summary_1 <- tbl_summary(annot_data, by = Class, type = list(Smoking_status ~ "categorical", Alcohol_status ~ "categorical"), statistic = all_continuous() ~ "{median} ({min}, {max})") %>%  
   bold_labels()  %>%  modify_header(all_stat_cols() ~ "**{level}**<br>N =  {n} ({style_percent(p)}%)") %>% 
   modify_spanning_header(all_stat_cols() ~ "**Histopathology Group**")
 
 tbl_summary_1 %>% as_gt()
 ```
+
+

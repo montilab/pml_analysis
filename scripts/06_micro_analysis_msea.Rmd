@@ -1,5 +1,5 @@
 ---
-title: "PML Microbiome Analysis w/o Infl"
+title: "PML Microbiome Analysis"
 author: "M. Muzamil Khan"
 date: "06/23/2022"
 output:
@@ -40,6 +40,7 @@ library(magrittr)
 library(SummarizedExperiment)
 library(ggsci)
 library(eply)
+library(plotly)
 library(igraph)
 PATH <- getwd()
 ```
@@ -53,8 +54,8 @@ Microbiome analysis of oral PMLs and cancer from total trx sequencing. Pathoscop
 Load eset
 
 ```{r}
-eset <- readRDS(file.path(PATH, "data/2021_08_20_eset_imputed.RDS"))
-eSet_wo_infl <- eset[, which(pData(eset)$Class != 'Inflammatory')]
+eset <- readRDS(file.path(PATH, "data/2021_08_20_eset_imputed_updated.RDS"))
+eSet_wo_infl <- eset
 table(eSet_wo_infl$Class)
 
 eSet_wo_infl$Class <- recode(eSet_wo_infl$Class, "Cancer"="OSCC")
@@ -84,6 +85,12 @@ colData(MAE[['MicrobeGenetics']]) <- cbind(colData(MAE[['MicrobeGenetics']]), pD
     
 MAE[['MicrobeGenetics']]$Progression_status <- ifelse(is.na(MAE[['MicrobeGenetics']]$Progression_status) | (MAE[['MicrobeGenetics']]$Progression_status =="Stable"), MAE[['MicrobeGenetics']]$Class, MAE[['MicrobeGenetics']]$Progression_status)
 
+MAE[['MicrobeGenetics']]$Class <- recode(MAE[['MicrobeGenetics']]$Class, "4-Cancer"="4-OSCC")
+saveRDS(MAE, file.path(PATH, "data/2023_06_19_animalcules_data.rds"))
+```
+
+```{r}
+MAE <- readRDS(file.path(PATH, "data/2023_06_19_animalcules_data.rds"))
 p1 <- animalcules::relabu_barplot(MAE,
                     tax_level="phylum",
                     sort_by= "conditions",
@@ -104,6 +111,13 @@ p3 <- animalcules::relabu_barplot(MAE,
                     sample_conditions=c('Class'),
                     show_legend=TRUE)
 p3
+
+p2 <- animalcules::relabu_barplot(MAE,
+                    tax_level="genus",order_organisms = c("Fusobacterium", "Streptococcus"),
+                    sort_by= "conditions",
+                    sample_conditions=rev(c('Class')),
+                    show_legend=TRUE, )
+p2
 
 ```
 
@@ -246,8 +260,10 @@ relabu_boxplot_wrapper <- function (MAE, tax_level, condition, organisms = c(), 
     geom_boxplot() + 
     viridis::scale_color_viridis(alpha = 0.90, discrete=T)+
     viridis::scale_fill_viridis(alpha = 0.90, discrete =T)+
-    ggplot2::geom_jitter(size=0.2) +
+    #ggplot2::geom_jitter(size=0.2) +
     theme_bw() + labs(y = "log-CPM")+
+    ggpubr::stat_compare_means(method = "anova", label = 'p.format')+
+     
     ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
   return(g)
 }
@@ -275,7 +291,7 @@ alpha_diversity_wrapper <- function (MAE, tax_level, condition, alpha_metric = c
     viridis::scale_color_viridis(alpha = 0.90, discrete=TRUE)+
     viridis::scale_fill_viridis(alpha = 0.90, discrete = TRUE)+
     ggplot2::geom_jitter(size=0.3) +
-    ggpubr::stat_compare_means(method = "anova",  label = 'p.format') +
+    #ggpubr::stat_compare_means(method = "anova",  label = 'p.format') +
     theme_bw() +
     ggplot2::theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
     ggplot2::labs(title = paste("Alpha diversity between ", 
@@ -284,11 +300,31 @@ alpha_diversity_wrapper <- function (MAE, tax_level, condition, alpha_metric = c
     return(g)
 }
 
+a1 <- alpha_diversity_wrapper(MAE = MAE, tax_level = "genus", condition = "Class", alpha_metric = "shannon")
+a1
 ```
 
+
+
 ```{r}
-animalcules::alpha_div_boxplot(MAE = MAE, tax_level = "genus", condition = "Class", alpha_metric = "shannon")
-animalcules::diversity_beta_heatmap(MAE = MAE, tax_level = "genus", input_beta_method = "bray", input_bdhm_select_conditions =   c("Class"), input_bdhm_sort_by = "conditions")
+microbe <- MAE[["MicrobeGenetics"]]
+sam_table <- as.data.frame(SummarizedExperiment::colData(microbe))
+tax_table <- as.data.frame(SummarizedExperiment::rowData(microbe))
+counts_table <- as.data.frame(SummarizedExperiment::assays(microbe))[, rownames(sam_table)]
+counts_table %<>% upsample_counts(tax_table, "genus")
+sam_table$richness <- diversities(counts_table, index = "shannon")
+colnames(sam_table)[ncol(sam_table)] <- "richness"
+
+condition <- "Class"
+colnames(sam_table)[which(colnames(sam_table) == condition)] <- "Class"
+  
+sam_table_richness <- sam_table[,c('Class', 'richness')]
+names(sam_table_richness) <- c('condition', 'richness')
+animalcules::alpha_div_test(sam_table = sam_table_richness)
+
+animalcules::diversity_beta_heatmap(MAE = MAE, tax_level = "genus", input_beta_method = "bray", input_bdhm_select_conditions =   "Class", input_bdhm_sort_by = "conditions") 
+
+animalcules::diversity_beta_test(MAE = MAE,tax_level = "genus", input_beta_method = "bray", input_select_beta_condition = "Class", input_select_beta_stat_method = "PERMANOVA", input_num_permutation_permanova = 1000)
 ```
 
 ```{r warning=F}
@@ -304,20 +340,15 @@ animalcules::diversity_beta_heatmap(MAE = MAE, tax_level = "species", input_beta
 ## Rel abu of MoI {.tabset .tabset-fade .tabset-pills}
 
 ```{r}
-relabu_boxplot_wrapper(MAE = MAE, tax_level = "genus", condition = "Class", organisms = c("Fusobacterium", "Neisseria", "Prevotella", "Shewanella", "Streptococcus", "Candida"), datatype = "logcpm")
+r1 <- relabu_boxplot_wrapper(MAE = MAE, tax_level = "genus", condition = "Class", organisms = c("Fusobacterium", "Neisseria", "Prevotella", "Shewanella", "Streptococcus", "Candida"), datatype = "logcpm")
+r1
 ```
 
-## Dim. Reduction {.tabset .tabset-fade .tabset-pills}
 
-```{r}
-animalcules::dimred_umap(MAE = MAE,tax_level = "genus", color = "Class", n_neighbors = 5, n_epochs = 1000, cx = 1, cy = 2, cz = 3)
-
-animalcules::dimred_pcoa(MAE = MAE,tax_level = "genus", color = "Class", method = "jaccard", axx = 1, axy = 2, axz = 3)
-```
 
 ## Diff. Exp {.tabset .tabset-fade .tabset-pills}
 
-```{r warning=F,}
+```{r warning=F, eval=F}
 diffanal <- differential_abundance(MAE,
                             tax_level="genus",
                             input_da_condition=c("Class"),
@@ -340,60 +371,6 @@ microbe_list
 #saveRDS(microbe_list, file.path("results/06_30_microbe_diffex_list.RDS"))
 ```
 
-## Violin Plots {.tabset .tabset-fade .tabset-pills}
-
-```{r}
-volcano_wrapper <- function(df){
-  ggplot(data=df, aes(x=log2FoldChange, y=-log10(padj), col=diffex, label=microbe)) +
-        geom_point() + 
-        theme_minimal() +
-        geom_text_repel() +
-        scale_color_manual(values=c("red", "blue")) +
-        geom_vline(xintercept=c(-0.6, 0.6), col="red") +
-        geom_hline(yintercept=-log10(0.05), col="red")
-}
-```
-
-### Cancer vs Ctrl
-
-```{r}
-library(ggrepel)
-df <- diffanal[which(diffanal$Contrast=='1-Control vs. 4-Cancer'),]
-df$log2FoldChange <- -df$log2FoldChange
-df$diffex <- ifelse(df$log2FoldChange >= 1 & df$padj <= 0.05, "Up", ifelse(df$log2FoldChange <= -1 & df$padj <= 0.05, "Down", "No diff"))
-df$diffex <- factor(df$diffex, levels = c("Up", "Down")) 
-
-g1 <- volcano_wrapper(df = df)
-g1
-```
-
-### Dys vs Ctrl
-
-```{r}
-library(ggrepel)
-df <- diffanal[which(diffanal$Contrast=='1-Control vs. 3-Dysplasia'),]
-df$log2FoldChange <- -df$log2FoldChange
-df$diffex <- ifelse(df$log2FoldChange >= 1 & df$padj <= 0.05, "Up", ifelse(df$log2FoldChange <= -1 & df$padj <= 0.05, "Down", "No diff"))
-df$diffex <- factor(df$diffex, levels = c("Up", "Down")) 
-
-g2 <- volcano_wrapper(df = df)
-g2
-```
-
-### HkNR vs Ctrl
-
-```{r}
-library(ggrepel)
-df <- diffanal[which(diffanal$Contrast=='1-Control vs. 2-HkNR'),]
-df$log2FoldChange <- -df$log2FoldChange
-df$diffex <- ifelse(df$log2FoldChange >= 1 & df$padj <= 0.05, "Up", ifelse(df$log2FoldChange <= -1 & df$padj <= 0.05, "Down", "No diff"))
-df$diffex <- factor(df$diffex, levels = c("Up", "Down")) 
-
-g3 <- volcano_wrapper(df = df)
-g3
-```
-
-
 
 ## MSEA {.tabset .tabset-fade .tabset-pills}
 
@@ -408,9 +385,9 @@ msea_cancer_dn <- read.csv(file.path(PATH, "results/msea_cancer_ctrl_dn.csv"))
 msea_pml_up <- read.csv(file.path(PATH, "results/msea_pml_ctrl_up.csv"))
 msea_pml_dn <- read.csv(file.path(PATH, "results/msea_pml_ctrl_dn.csv"))
 
-msea_cancer_up <- msea_cancer_up[msea_cancer_up$qvalue<=0.05,]
+msea_cancer_up <- msea_cancer_up[msea_cancer_up$qvalue<=0.05 & msea_cancer_up$combined_score > 0,]
 msea_cancer_dn <- msea_cancer_dn[msea_cancer_dn$qvalue<=0.05,]#none significant
-msea_pml_up <- msea_pml_up[msea_pml_up$qvalue<=0.05,]
+msea_pml_up <- msea_pml_up[msea_pml_up$qvalue<=0.05 & msea_pml_up$combined_score > 0, ]
 msea_pml_dn <- msea_pml_dn[msea_pml_dn$qvalue<=0.05,]#none significant
 
 msea_genes <- list("cancer" = msea_cancer_up$term, 
@@ -469,34 +446,59 @@ msea_cancer_up_new
 ```
 
 ### igraph
-
-```{r fig.height=10}
-
-tdf <- table(msea_cancer_up_new[, c('term', 'shared')])
-g <- graph.incidence(tdf, weighted = TRUE)
-is.bipartite(g)
-deg <- degree(g, mode="all")
-deg <- ifelse(names(deg) %in% msea_cancer_up_new$term, deg*5, deg)
-
-colrs <- c("green", "cyan")[V(g)$type + 1L]
-lay <- layout_as_bipartite(g)[,2:1]
-
-V(g)$shape <- ifelse(V(g) %in% msea_cancer_up_new$term, "square", "circle")
-
-plot(g, 
-     vertex.color = colrs, 
-     layout = lay, 
-     vertex.size=deg,
-     asp = 5,
-     vertex.size=c(15:24))
-
-```
-
-### Final igraph
 - Choose genes that come up diff analysis
 - to adjust for degree size for genes double it
 
-```{r fig.height=10}
+```{r}
+msea_cancer_up_de <- msea_cancer_up_new[msea_cancer_up_new$term %in% diff_cancer$gene, ]
+df <- msea_cancer_up_de[, c("term", "shared", "combined_score")]
+transformed_mat <- xtabs(combined_score~., df)
+attr(transformed_mat, "class") <- NULL #ignore this
+
+#tdf <- table(msea_cancer_up_de[, c('term', 'shared')])
+g <- graph.incidence(transformed_mat, weighted = TRUE)
+is.bipartite(g)
+deg <- degree(g, mode="all")
+
+# g <- delete.vertices(g, which(degree(g)<5))
+# deg <- degree(g)
+
+colrs <- c("red","#6CA6CD")[V(g)$type + 1L]
+
+V(g)$shape <- ifelse(V(g)$name %in% unquote(msea_cancer_up_de$term), "circle", "square")
+V(g)$vertex.label.dist = 1
+
+LO = matrix(0, nrow=vcount(g), ncol=2)
+LO[!V(g)$type, 2] = 1
+
+LO[V(g)$type, 1]  = rank(V(g)$name[V(g)$type]) - 1
+LO[!V(g)$type, 1] = (rank(V(g)$name[!V(g)$type]) - 1) * 
+    (sum(V(g)$type) - 1)  /  (sum(!V(g)$type) - 1)
+
+#for a vertical bipartite graph
+LO <- LO[,2:1]
+#LO[,2] <- LO[,2]*2
+
+plot(g, 
+     vertex.color = adjustcolor(colrs,  alpha.f = 1), 
+     vertex.frame.color = colrs,
+     layout = LO, 
+     vertex.size = ifelse(V(g)$name %in% unquote(msea_cancer_up_de$term), deg*2.5, deg*1.95),
+     #vertex.size = deg*3,
+    vertex.label.dist = ifelse(V(g)$name %in% unquote(msea_cancer_up_de$term), -8, 13),
+    vertex.label.degree =  ifelse(V(g)$name %in% unquote(msea_cancer_up_de$term), 3.14, -3.14), # The position of the label in relation to the vertex, where 0 is right, “pi” is left, “pi/2” is below, and “-pi/2” is above
+     #vertex.label.cex=0.5,
+    vertex.label.cex= ifelse(V(g)$name %in% unquote(msea_cancer_up_de$term), 1, 1),
+     vertex.frame.width=0.1,
+     vertex.label.color="black",
+     edge.width=abs(E(g)$weight)/20, 
+     vertex.label.family="Arial",
+    vertex.label.font=ifelse(V(g)$name %in% unquote(msea_cancer_up_de$term),1,3),
+     edge.color = "black",
+     asp = 2.5)
+```
+
+```{r cancer_old_code, eval=F}
 msea_cancer_up_de <- msea_cancer_up_new[msea_cancer_up_new$term %in% diff_cancer$gene, ]
 df <- msea_cancer_up_de[, c("term", "shared", "combined_score")]
 transformed_mat <- xtabs(combined_score~., df)
@@ -505,8 +507,10 @@ attr(transformed_mat, "class") <- NULL #ignore this
 g <- graph.incidence(transformed_mat, weighted = TRUE)
 is.bipartite(g)
 deg <- degree(g, mode="all")
-colrs <- c("#FFD580","#6CA6CD")[V(g)$type + 1L]
+#colrs <- c("#FFD580","#6CA6CD")[V(g)$type + 1L]
 
+colrs <- c("#6CA6CD", "red")[V(g)$type + 1L]
+colrs <- ifelse(colrs=="red" & V(g)$name %in% c("CEACAM1", "GALE", "IL18"), "blue", colrs)
 
 V(g)$shape <- ifelse(V(g)$name %in% unquote(msea_cancer_up_de$term), "circle", "square")
 
@@ -520,20 +524,25 @@ LO[!V(g)$type, 1] = (rank(V(g)$name[!V(g)$type]) - 1) *
 #for a vertical bipartite graph
 LO <- LO[,2:1]
 
-
+tiff(file.path(PATH, "results/06_16_cancer_microbes_ig.png"),units="in", width=5, height=5, res=600)
 plot(g, 
-     vertex.color = adjustcolor(colrs,  alpha.f = .6), 
+     vertex.color = adjustcolor(colrs,  alpha.f = 1), 
      vertex.frame.color = colrs,
      layout = LO, 
-     vertex.size = ifelse(V(g)$name %in% unquote(msea_cancer_up_de$term), deg*2, deg*1.95),
+     vertex.size = ifelse(V(g)$name %in% unquote(msea_cancer_up_de$term), deg*2.5, deg*1.95),
      #vertex.size = deg*3,
-     vertex.label.dist = 0,
+     vertex.label.dist = -1,
      vertex.label.cex=0.3,
      vertex.frame.width=0.1,
-     edge.width=abs(E(g)$weight)/200, 
+     vertex.label.color="black",
+     edge.width=abs(E(g)$weight)/20, 
      vertex.label.family="Arial",
-     edge.color=ifelse(E(g)$weight > 0, "red","blue"),
+     vertex.label.font=4,
+     vertex.label.face = 
+     edge.color = "black",
+     #edge.color=ifelse(E(g)$weight > 0, "red","blue"),
      asp = 2.5)
+dev.off()
 ```
 
 
@@ -580,7 +589,7 @@ msea_pml_up_new
 - to adjust for degree size for genes double it
 
 
-```{r}
+```{r old_code, eval=F}
 msea_pml_up_de <- msea_pml_up_new[msea_pml_up_new$term %in% diff_pml$gene, ]
 df <- msea_pml_up_de[, c("shared", "term", "combined_score")]
 transformed_mat <- xtabs(combined_score~., df)
@@ -589,6 +598,7 @@ attr(transformed_mat, "class") <- NULL #ignore this
 g <- graph.incidence(transformed_mat, weighted = TRUE)
 is.bipartite(g)
 deg <- degree(g, mode="all")
+
 colrs <- c("#7EC384", "#FFD580")[V(g)$type + 1L]
 
 V(g)$shape <- ifelse(V(g)$name %in% unquote(msea_pml_up_de$term), "circle", "square")
@@ -619,6 +629,47 @@ plot(g,
 
 ```
 
+```{r}
+msea_pml_up_de <- msea_pml_up_new[msea_pml_up_new$term %in% diff_pml$gene, ]
+df <- msea_pml_up_de[, c("shared", "term", "combined_score")]
+transformed_mat <- xtabs(combined_score~., df)
+attr(transformed_mat, "class") <- NULL #ignore this
 
+#tdf <- table(msea_cancer_up_de[, c('term', 'shared')])
+g <- graph.incidence(transformed_mat, weighted = TRUE)
+is.bipartite(g)
+deg <- degree(g, mode="all")
+colrs <- c("#6CA6CD","red")[V(g)$type + 1L]
+colrs <- ifelse(colrs=="red" & V(g)$name %in% c("CEACAM1", "GALE", "IL18"), "blue", colrs)
 
+V(g)$shape <- ifelse(V(g)$name %in% unquote(msea_pml_up_new$term), "circle", "square")
+V(g)$vertex.label.dist = 1
 
+LO = matrix(0, nrow=vcount(g), ncol=2)
+LO[!V(g)$type, 2] = 1
+
+LO[V(g)$type, 1]  = rank(V(g)$name[V(g)$type]) - 1
+LO[!V(g)$type, 1] = (rank(V(g)$name[!V(g)$type]) - 1) * 
+    (sum(V(g)$type) - 1)  /  (sum(!V(g)$type) - 1)
+
+#for a vertical bipartite graph
+LO <- LO[,2:1]
+
+plot(g, 
+     vertex.color = adjustcolor(colrs,  alpha.f = 1), 
+     vertex.frame.color = colrs,
+     layout = LO, 
+    vertex.size = ifelse(V(g)$name %in% unquote(msea_pml_up_de$term), deg*1.75, deg*1.25),
+     vertex.label.cex= ifelse(V(g)$name %in% unquote(msea_pml_up_de$term), 1,1),
+    vertex.label.dist = ifelse(V(g)$name %in% unquote(msea_pml_up_de$term), 7.5, -12.5),
+    vertex.label.degree =  ifelse(V(g)$name %in% unquote(msea_pml_up_de$term), -3.14,-3.14), # The position of the label in relation to the vertex, where 0 is right, “pi” is left, “pi/2” is below, and “-pi/2” is above
+     #vertex.label.cex=0.5,
+     vertex.frame.width=0.1,
+     vertex.label.color="black",
+     edge.width=abs(E(g)$weight)/30, 
+     vertex.label.family="Arial",
+     vertex.label.font=ifelse(V(g)$name %in% unquote(msea_pml_up_de$term), 1,3),
+     edge.color = "black",
+     asp = 3)
+
+```

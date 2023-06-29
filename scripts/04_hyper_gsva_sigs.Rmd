@@ -48,8 +48,8 @@ PATH <- getwd()
 ## Load eSet {.tabset .tabset-fade .tabset-pills}
 
 ```{r}
-eset <- readRDS(file.path(PATH, "data/2021_08_20_eset_imputed.RDS"))
-eSet_wo_infl <- eset[, which(pData(eset)$Class != 'Inflammatory')]
+eset <- readRDS(file.path(PATH, "data/2021_08_20_eset_imputed_updated.RDS"))
+eSet_wo_infl <- eset
 table(eSet_wo_infl$Class)
 
 eSet_wo_infl$Class <- recode(eSet_wo_infl$Class, "Cancer"="OSCC")
@@ -219,7 +219,7 @@ prolif1 <- ggplot2::ggplot(prolif_res_df, ggplot2::aes_string(
     scale_color_npg(alpha = 0.8)+
     scale_fill_npg(alpha = 0.7)+
     ggplot2::geom_jitter(size=0.3) +
-    labs(y = "GSVA Score", x = "Type")+ 
+    labs(y = "GSVA Score", x = "Type", title = paste("Module 5 - Cell     ", "Cycle", sep = "\n"))+ 
     ggpubr::stat_compare_means(method = "anova",  label = 'p.format')+
     theme_bw()+
     ggplot2::theme(strip.text.x = ggplot2::element_text(size = 8),
@@ -237,7 +237,7 @@ prolif2 <- ggplot2::ggplot(prolif_res_df, ggplot2::aes_string(
     scale_color_npg(alpha = 0.8)+
     scale_fill_npg(alpha = 0.7)+
     ggplot2::geom_jitter(size=0.3) +
-    labs(y = "GSVA Score", x = "Type")+ 
+    labs(y = "GSVA Score", x = "Type", title = paste("Module 9 - Interferon",  "Signaling", sep = "\n"))+ 
     ggpubr::stat_compare_means(method = "anova",  label = 'p.format')+
     theme_bw()+
     ggplot2::theme(strip.text.x = ggplot2::element_text(size = 8),
@@ -255,7 +255,7 @@ prolif3 <- ggplot2::ggplot(prolif_res_df, ggplot2::aes_string(
     scale_color_npg(alpha = 0.8)+
     scale_fill_npg(alpha = 0.7)+
     ggplot2::geom_jitter(size=0.3) +
-    labs(y = "GSVA Score", x = "Type")+ 
+    labs(y = "GSVA Score", x = "Type", title = paste("Module 8 - Inflammatory",  "Response", sep = "\n"))+ 
     ggpubr::stat_compare_means(method = "anova",  label = 'p.format')+
     theme_bw()+
     ggplot2::theme(strip.text.x = ggplot2::element_text(size = 8),
@@ -266,6 +266,11 @@ prolif3 <- ggplot2::ggplot(prolif_res_df, ggplot2::aes_string(
 
 
 prolif3
+
+ggarr <- ggpubr::ggarrange(prolif1, prolif2, prolif3, ncol = 3, nrow = 1, widths = c(3,4,4))
+ggarr
+
+#ggsave(ggarr, filename = file.path(PATH, "results/06_20_beane_modules.png"), width = 8, height = 4, dpi = 300)
 ```
 
 
@@ -297,6 +302,8 @@ g1 <- ggplot2::ggplot(gsvaResFlat, ggplot2::aes_string(
   labs(title = 'Fibroblast markers', y = "Counts(CPM)", x = "Class")+
   theme(axis.text = element_text(size = 10), axis.title = element_text(size = 10, face = "bold"))
 g1
+
+ggsave(g1, filename = file.path(PATH, "results/06_20_fibr_markers.png"), width = 8, height = 4, dpi = 300)
 ```
 
 
@@ -336,7 +343,9 @@ gsvaViolinplot <- function(gsvaData, textsize, eset, title) {
     theme(axis.text = element_text(size = 10), axis.title = element_text(size = 10, face = "bold"))
 }
 
-gsvaViolinplot(gsvaData = pdgfb_gsva_res1, textsize = 8,eset = cpm_eset, title = "PDGFRB sigs")
+g2 <- gsvaViolinplot(gsvaData = pdgfb_gsva_res1, textsize = 8,eset = cpm_eset, title = "PDGFRB sigs")
+g2
+#ggsave(g2, filename = file.path(PATH, "results/06_20_pdgfrb_sigs.png"), width = 4, height = 4, dpi = 300)
 ```
 
 #### pEMT ~ pdgfr sigs
@@ -353,8 +362,8 @@ gsvaViolinplot(gsvaData = gsva_pemt, textsize = 8, eset = cpm_eset, title = "pEM
 ```
 
 ```{r}
-df_plasticity <- data.frame(t(gsva_pemt), t(pdgfb_gsva_res1), Class=eSet_wo_infl$Class)
-df_plasticity$Class <- factor(df_plasticity$Class, levels = c("Control", "HkNR", "Dysplasia", "OSCC"))
+df_plasticity <- data.frame(t(gsva_pemt), t(pdgfb_gsva_res1), Class=cpm_eset$Class)
+df_plasticity$Class <- factor(df_plasticity$Class, levels = c("1-Control", "2-HkNR", "3-Dysplasia", "4-OSCC"))
 ```
 
 ```{r}
@@ -381,10 +390,11 @@ sp2 <- ggpubr::ggscatter(df_plasticity, x = "pEMT", y = "pdgfb", col="Class",
   scale_fill_npg(alpha = 0.7)+
   ggplot2::geom_jitter(size=0.3) 
 # Add correlation coefficient
-sp2 +  
+sp2_final <- sp2 +  
   ggpubr::stat_cor(method = "pearson")  +
    labs(y = "PDGFRb GSVA scores", x = "pEMT GSVA scores")
 
+#ggsave(plot = sp2_final, file.path(PATH, "results/06_20_pemt_pdgf.png"), width = 6, height = 4, dpi = 300)
 
 ggplot(df_plasticity,aes(pEMT, pdgfb,  col=Class)) +
   geom_point() +
